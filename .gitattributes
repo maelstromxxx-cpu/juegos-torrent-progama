@@ -1,2 +1,8 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Las sinopsis TXT se publican con LF aunque Windows use CRLF.
+sinopsis/**/*.txt text eol=lf
+sinopsis/*.txt text eol=lf
+# Los recursos multimedia no deben sufrir conversiones de texto.
+imagenes/** binary
+capturas/** binary
+
+datos/*.txt text eol=lf
