@@ -232,13 +232,19 @@ def find_game_data(name):
             result = {}
             keys = {'año': 'anio', 'ano': 'anio', 'género': 'genero',
                     'genero': 'genero', 'tamaño': 'tamano', 'tamano': 'tamano',
-                    'modo': 'modo'}
+                    'modo': 'modo', 'idioma': 'idioma'}
             for line in raw.splitlines():
                 key, sep, value = line.partition(':')
                 if sep and key.strip().casefold() in keys:
                     normalized = keys[key.strip().casefold()]
                     if value.strip():
-                        result[normalized] = value.strip()[:80]
+                        clean_value = value.strip()[:80]
+                        if normalized == 'idioma':
+                            aliases = {'español': 'Español', 'espanol': 'Español',
+                                       'ingles': 'Ingles', 'inglés': 'Ingles', 'multi': 'MULTI'}
+                            clean_value = aliases.get(clean_value.casefold(), '')
+                        if clean_value:
+                            result[normalized] = clean_value
             return result
     return {}
 
@@ -314,7 +320,7 @@ def download_file(url, destination, on_progress):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.1')
+        self.title('Juegos Torrent 2.2')
         self.geometry('1280x800')
         try:
             self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
@@ -450,7 +456,8 @@ class App(tk.Tk):
                 ('anio', 'anio.png', 'Año'),
                 ('genero', 'genero.png', 'Género'),
                 ('tamano', 'tamano.png', 'Tamaño'),
-                ('modo', 'modo.png', 'Modo')):
+                ('modo', 'modo.png', 'Modo'),
+                ('idioma', 'idioma.png', 'Idioma')):
             slot = tk.Frame(self.info_bar, bg=CARD)
             slot.pack(side='left', padx=(0, 12))
             path = INFO_ICONS / icon
