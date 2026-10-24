@@ -13,16 +13,16 @@ except ImportError:
     Image = ImageTk = None
 
 CONFIG = Path.home() / '.generador_txt_config.json'
-SECCIONES = ('DATOS', 'SINOPSIS', 'INSTRUCCIONES')
+SECCIONES = ('DATOS', 'SINOPSIS', 'INSTRUCCIONES', 'UPDATES')
 PLANTILLA_DATOS = 'Año:\nGénero:\nTamaño:\nModo:\nIdioma:\n'
 FORMATOS = ('.jpg', '.jpeg', '.png', '.webp')
 
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Generador de TXT, portadas y capturas - v4')
-        self.geometry('1500x900')
-        self.minsize(1050, 680)
+        self.title('Generador de TXT, portadas, capturas y torrents - v7')
+        self.geometry('1750x900')
+        self.minsize(1100, 680)
         try:
             self.configuracion = json.loads(CONFIG.read_text(encoding='utf-8'))
             if not isinstance(self.configuracion, dict): self.configuracion = {}
@@ -36,6 +36,8 @@ class Generador(tk.Tk):
         self.previews = []
         self.ruta_capturas = tk.StringVar(value=self.configuracion.get('CAPTURAS', ''))
         self.ruta_portadas = tk.StringVar(value=self.configuracion.get('PORTADAS', ''))
+        self.ruta_torrents = tk.StringVar(value=self.configuracion.get('TORRENTS', ''))
+        self.archivo_torrent = None
         ttk.Style(self).configure('TButton', padding=5)
 
         exterior = ttk.Frame(self)
@@ -88,7 +90,7 @@ class Generador(tk.Tk):
         ttk.Label(fotos, text='Se guardará como Nombre del juego.webp (con procesamiento activado).', wraplength=360).grid(row=5, column=0, columnspan=2, sticky='w', pady=(5, 0))
 
         capturas = ttk.LabelFrame(principal, text='  CAPTURAS  ', padding=10)
-        capturas.grid(row=1, column=1, columnspan=2, sticky='nsew', padx=5, pady=(10, 0))
+        capturas.grid(row=1, column=1, columnspan=3, sticky='nsew', padx=5, pady=(10, 0))
         capturas.columnconfigure(0, weight=1)
         botones = ttk.Frame(capturas)
         botones.grid(row=0, column=0, sticky='ew')
@@ -110,8 +112,24 @@ class Generador(tk.Tk):
         self.selector_carpeta(capturas, self.ruta_capturas, 4)
         ttk.Label(capturas, text='Capturas: 1.webp, 2.webp, etc. Los originales no se modifican.').grid(row=5, column=0, sticky='w', pady=(5, 0))
 
+        torrent_panel = ttk.LabelFrame(principal, text='  TORRENT (COPIA A GOOGLE DRIVE O CARPETA LOCAL)  ', padding=10)
+        torrent_panel.grid(row=2, column=0, columnspan=4, sticky='ew', padx=5, pady=(10, 0))
+        torrent_panel.columnconfigure(0, weight=1)
+        botones_torrent = ttk.Frame(torrent_panel)
+        botones_torrent.grid(row=0, column=0, sticky='w')
+        ttk.Button(botones_torrent, text='Examinar torrent...', command=self.elegir_torrent).pack(side='left', padx=(0, 8))
+        ttk.Button(botones_torrent, text='Quitar torrent', command=self.quitar_torrent).pack(side='left')
+        self.lbl_torrent = ttk.Label(torrent_panel, text='Ningún torrent seleccionado')
+        self.lbl_torrent.grid(row=1, column=0, sticky='w', pady=(5, 8))
+        ttk.Label(torrent_panel, text='Carpeta de destino (podés seleccionar la unidad de Google Drive):').grid(row=2, column=0, sticky='w')
+        self.selector_carpeta(torrent_panel, self.ruta_torrents, 3)
+        ttk.Label(torrent_panel, text='El archivo .torrent conserva su nombre original. Google Drive para escritorio se encarga de sincronizarlo.').grid(row=4, column=0, sticky='w', pady=(5, 0))
+
         ttk.Checkbutton(self, text='Convertir a WEBP (calidad 75) y reducir a 600 px de ancho sin deformar', variable=self.redimensionar).pack(pady=(8, 0))
-        ttk.Button(self, text='GUARDAR TODOS', command=self.guardar).pack(pady=12, ipadx=38, ipady=7)
+        acciones = ttk.Frame(self)
+        acciones.pack(pady=12)
+        ttk.Button(acciones, text='GUARDAR TODOS', command=self.guardar).pack(side='left', padx=8, ipadx=30, ipady=7)
+        ttk.Button(acciones, text='LIMPIAR TODO', command=self.confirmar_limpieza).pack(side='left', padx=8, ipadx=20, ipady=7)
         self.protocol('WM_DELETE_WINDOW', self.cerrar)
 
     def menu_contextual(self, widget):
@@ -141,6 +159,16 @@ class Generador(tk.Tk):
         if carpeta:
             variable.set(carpeta)
             self.guardar_configuracion()
+
+    def elegir_torrent(self):
+        ruta = filedialog.askopenfilename(title='Seleccionar archivo torrent', filetypes=[('Archivos torrent', '*.torrent')])
+        if ruta:
+            self.archivo_torrent = Path(ruta)
+            self.lbl_torrent.configure(text=self.archivo_torrent.name)
+
+    def quitar_torrent(self):
+        self.archivo_torrent = None
+        self.lbl_torrent.configure(text='Ningún torrent seleccionado')
 
     def elegir_portada(self):
         ruta = filedialog.askopenfilename(title='Seleccionar portada', filetypes=[('Imágenes', '*.jpg *.jpeg *.png *.webp'), ('Todos', '*.*')])
@@ -199,6 +227,7 @@ class Generador(tk.Tk):
         datos = {nombre: ruta.get().strip() for nombre, _, ruta in self.paneles}
         datos['CAPTURAS'] = self.ruta_capturas.get().strip()
         datos['PORTADAS'] = self.ruta_portadas.get().strip()
+        datos['TORRENTS'] = self.ruta_torrents.get().strip()
         try:
             CONFIG.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding='utf-8')
         except OSError:
@@ -227,6 +256,27 @@ class Generador(tk.Tk):
                 if os.path.exists(temporal):
                     os.unlink(temporal)
 
+    def limpiar_formulario(self):
+        """Limpia la ficha sin cambiar rutas ni borrar archivos."""
+        self.nombre_juego.set('')
+        for seccion, caja, _ in self.paneles:
+            caja.delete('1.0', 'end')
+            if seccion == 'DATOS':
+                caja.insert('1.0', PLANTILLA_DATOS)
+            caja.edit_reset()
+            caja.edit_modified(False)
+        self.quitar_portada()
+        self.vaciar_capturas()
+        self.quitar_torrent()
+        self.paneles[0][1].focus_set()
+
+    def confirmar_limpieza(self):
+        if messagebox.askyesno('Limpiar formulario',
+                               '¿Querés limpiar todos los campos y comenzar un juego nuevo?\n\n'
+                               'Se conservarán las carpetas de destino.\n'
+                               'No se borrará ningún archivo guardado.'):
+            self.limpiar_formulario()
+
     def guardar(self):
         nombre = self.nombre_juego.get().strip()
         if nombre.lower().endswith('.txt'):
@@ -235,7 +285,7 @@ class Generador(tk.Tk):
             or nombre.endswith((' ', '.')) or re.fullmatch(r'(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?', nombre)):
             messagebox.showerror('Nombre inválido', 'Escribí un nombre válido para el juego.')
             return
-        if self.redimensionar.get() and Image is None:
+        if self.redimensionar.get() and Image is None and (self.portada or self.imagenes_capturas):
             messagebox.showerror('Falta Pillow', 'Para convertir y redimensionar imágenes instalá Pillow:\n\npython -m pip install pillow')
             return
         trabajos = []
@@ -253,6 +303,15 @@ class Generador(tk.Tk):
                 messagebox.showerror('Carpeta inválida', 'Seleccioná una carpeta existente para PORTADAS.')
                 return
             trabajos.append((destino / (nombre + ('.webp' if self.redimensionar.get() else self.portada.suffix.lower())), None, self.portada))
+        if self.archivo_torrent:
+            if self.archivo_torrent.suffix.lower() != '.torrent':
+                messagebox.showerror('Archivo inválido', 'Seleccioná un archivo .torrent válido.')
+                return
+            carpeta_torrent = Path(self.ruta_torrents.get().strip()) if self.ruta_torrents.get().strip() else None
+            if carpeta_torrent is None or not carpeta_torrent.is_dir():
+                messagebox.showerror('Carpeta inválida', 'Seleccioná una carpeta existente para TORRENTS (por ejemplo, la unidad de Drive).')
+                return
+            trabajos.append((carpeta_torrent / self.archivo_torrent.name, None, self.archivo_torrent))
         base = Path(self.ruta_capturas.get().strip()) if self.ruta_capturas.get().strip() else None
         if base is not None and not base.is_dir():
             messagebox.showerror('Carpeta inválida', 'La carpeta principal de CAPTURAS no existe.')
@@ -285,6 +344,9 @@ class Generador(tk.Tk):
             for destino, contenido, origen in trabajos:
                 if origen is None:
                     destino.write_text(contenido, encoding='utf-8')
+                elif origen.suffix.lower() == '.torrent':
+                    if origen.resolve() != destino.resolve():
+                        shutil.copy2(origen, destino)
                 else:
                     self.procesar_imagen(origen, destino)
                 guardados += 1
@@ -293,9 +355,10 @@ class Generador(tk.Tk):
             return
         self.guardar_configuracion()
         txt = sum(1 for _, contenido, _ in trabajos if contenido is not None)
-        mensaje = f'¡Listo!\n\nTXT: {txt}\nPortada: {1 if self.portada else 0}\nCapturas: {len(self.imagenes_capturas)}'
+        mensaje = f'¡Listo!\n\nTXT: {txt}\nPortada: {1 if self.portada else 0}\nCapturas: {len(self.imagenes_capturas)}\nTorrent copiado: {1 if self.archivo_torrent else 0}'
         if carpeta_capturas:
             mensaje += f'\n\nCarpeta de capturas: {carpeta_capturas}'
+        self.limpiar_formulario()
         messagebox.showinfo('Guardado completo', mensaje)
 
     def cerrar(self):
