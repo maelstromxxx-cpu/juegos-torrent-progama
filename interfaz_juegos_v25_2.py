@@ -1,14 +1,16 @@
-# Juegos Torrent 2.5 - Biblioteca remota con bienvenida PC Gaming. No modifica catalogo.ps1.
+# Juegos Torrent 2.5.2 - Biblioteca remota con bienvenida PC Gaming. No modifica catalogo.ps1.
 import re
 import random
 import os
 import tempfile
 import json
 import hashlib
+import time
 from urllib.parse import urlparse, quote
 import webbrowser
 from urllib.error import HTTPError, URLError
 import threading
+import queue
 import logging
 import tkinter as tk
 from pathlib import Path
@@ -111,26 +113,47 @@ def fetch_bytes(url, limit):
     return raw
 
 
+def local_asset_matches(destination, expected_hash, expected_size):
+    """Valida también los archivos ya guardados; nunca confiar solo en su existencia."""
+    try:
+        if not destination.is_file() or destination.stat().st_size != expected_size:
+            return False
+        h = hashlib.sha256()
+        with destination.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                h.update(chunk)
+        return h.hexdigest() == expected_hash
+    except OSError:
+        return False
+
+
 def download_library_asset(base_url, relative, expected_hash, expected_size):
     destination = BASE.joinpath(*relative.split('/'))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    # No sobrescribir archivos locales editados por el usuario.
-    if destination.exists():
+    if local_asset_matches(destination, expected_hash, expected_size):
         return False
     url = base_url + '/'.join(quote(part, safe='') for part in relative.split('/'))
-    raw = fetch_bytes(url, MAX_ASSET_BYTES)
-    if len(raw) != expected_size or hashlib.sha256(raw).hexdigest() != expected_hash:
-        raise ValueError('El archivo remoto no coincide con su hash SHA256.')
+    # GitHub Raw puede servir temporalmente una versión anterior tras un push.
+    # Reintentos con consulta única para evitar reutilizar la respuesta en caché.
+    raw = None
+    for attempt in range(3):
+        unique_url = url + ('&' if '?' in url else '?') + f'jt_refresh={time.time_ns()}_{attempt}'
+        raw = fetch_bytes(unique_url, MAX_ASSET_BYTES)
+        if len(raw) == expected_size and hashlib.sha256(raw).hexdigest() == expected_hash:
+            break
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+    else:
+        raise ValueError('El archivo remoto no coincide con su hash SHA256 tras 3 intentos; se conserva la copia local.')
     with tempfile.NamedTemporaryFile(dir=destination.parent, prefix='.jt-', delete=False) as f:
         temp = Path(f.name)
         f.write(raw)
     try:
-        if not destination.exists():
-            temp.replace(destination)
-            return True
+        # Sustitución atómica SOLO después de comprobar el archivo nuevo.
+        os.replace(temp, destination)
+        return True
     finally:
         temp.unlink(missing_ok=True)
-    return False
 
 
 
@@ -320,7 +343,7 @@ def download_file(url, destination, on_progress):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.3')
+        self.title('Juegos Torrent 2.5.2')
         self.geometry('1280x800')
         try:
             self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
@@ -332,6 +355,9 @@ class App(tk.Tk):
         self.remote_base_url = ''
         self.remote_pending = set()
         self.remote_lock = threading.Lock()
+        self.asset_events = queue.Queue()
+        self.cover_cards = {}
+        self.after(120, self.process_asset_events)
         self.games = []
         self.images = []
         self.screenshot_images = []
@@ -657,7 +683,10 @@ class App(tk.Tk):
 
         def worker():
             try:
-                raw = fetch_bytes(manifest_url, MAX_MANIFEST_BYTES)
+                separator = '&' if '?' in manifest_url else '?'
+                fresh_url = f'{manifest_url}{separator}jt_refresh={time.time_ns()}'
+                raw = fetch_bytes(fresh_url, MAX_MANIFEST_BYTES)
+                logging.info('Manifiesto SHA256 recibido: %s', hashlib.sha256(raw).hexdigest())
                 manifest = validate_remote_manifest(json.loads(raw.decode('utf-8-sig')))
                 base_url = manifest_url.rsplit('/', 1)[0] + '/'
                 self.after(0, lambda: self.remote_manifest_loaded(manifest, base_url))
@@ -677,10 +706,15 @@ class App(tk.Tk):
         if not self.remote_manifest or not self.games:
             return
         names = ([self.selected['name']] if self.selected else []) if selected_only else [g['name'] for g in self.games]
-        # Un índice casefold permite encontrar títulos con "of"/"Of" sin alterar
-        # la ruta real de GitHub (donde las mayúsculas sí importan).
+        manifest = dict(self.remote_manifest)
+        base_url = self.remote_base_url
+        # La comparación SHA256 local corre fuera del hilo de Tkinter.
+        threading.Thread(target=self._scan_remote_assets,
+                         args=(names, manifest, base_url), daemon=True).start()
+
+    def _scan_remote_assets(self, names, manifest, base_url):
         index = {}
-        for path in self.remote_manifest:
+        for path in manifest:
             index.setdefault(path.casefold(), []).append(path)
         wanted = []
         for name in names:
@@ -689,7 +723,7 @@ class App(tk.Tk):
                 for stem in stems:
                     prefix = f'{category}/{stem}'
                     if category == 'capturas':
-                        matches = [p for p in self.remote_manifest
+                        matches = [p for p in manifest
                                    if p.casefold().startswith((prefix + '/').casefold())]
                         matches.sort(key=lambda p: p.casefold())
                     elif category in ('sinopsis', 'datos'):
@@ -698,53 +732,81 @@ class App(tk.Tk):
                         matches = [p for ext in IMAGE_EXTS
                                    for p in index.get((prefix + ext).casefold(), [])]
                     if matches:
-                        # Descargar cada recurso faltante, no dar por completo un
-                        # juego solamente porque ya tenga una captura.
-                        for p in matches[:12] if category == 'capturas' else matches[:1]:
-                            destination = BASE.joinpath(*p.split('/'))
-                            if not destination.is_file():
-                                wanted.append(p)
+                        for relative in matches[:12] if category == 'capturas' else matches[:1]:
+                            digest, size = manifest[relative]
+                            destination = BASE.joinpath(*relative.split('/'))
+                            if not local_asset_matches(destination, digest, size):
+                                wanted.append(relative)
                         break
         with self.remote_lock:
             new = [p for p in dict.fromkeys(wanted) if p not in self.remote_pending]
             self.remote_pending.update(new)
         if new:
-            logging.info('Descargas pendientes: %s', ', '.join(new))
-            threading.Thread(target=self.download_remote_batch, args=(new,), daemon=True).start()
+            logging.info('Archivos nuevos o modificados: %s', ', '.join(new))
+            self.download_remote_batch(new, manifest, base_url)
 
-    def download_remote_batch(self, paths):
-        changed = False
+    def download_remote_batch(self, paths, manifest=None, base_url=None):
+        manifest = manifest if manifest is not None else dict(self.remote_manifest)
+        base_url = base_url if base_url is not None else self.remote_base_url
         try:
             for relative in paths:
                 try:
-                    digest, size = self.remote_manifest[relative]
-                    downloaded = download_library_asset(self.remote_base_url, relative, digest, size)
-                    changed |= downloaded
+                    digest, size = manifest[relative]
+                    downloaded = download_library_asset(base_url, relative, digest, size)
                     if downloaded:
-                        logging.info('Descargado: %s', relative)
+                        logging.info('Actualizado/descargado: %s', relative)
+                        # Avisar a la interfaz por cada archivo, no al terminar todo el lote.
+                        # Queue evita invocar Tkinter desde los hilos de descarga.
+                        self.asset_events.put(relative)
                 except Exception:
-                    logging.exception('No se pudo descargar %s', relative)
+                    logging.exception('No se pudo actualizar %s; se conserva el archivo local', relative)
         finally:
             with self.remote_lock:
                 self.remote_pending.difference_update(paths)
-            if changed:
-                try:
-                    self.after(0, self.refresh_remote_assets)
-                except RuntimeError:
-                    pass
 
-    def refresh_remote_assets(self):
-        self.render_games()
+    def process_asset_events(self):
+        """Agrupa eventos de descarga sin bloquear ni reconstruir todo el catálogo."""
+        changed = set()
+        try:
+            while True:
+                changed.add(self.asset_events.get_nowait())
+        except queue.Empty:
+            pass
+        if changed:
+            try:
+                self.refresh_remote_assets(changed)
+            except Exception:
+                logging.exception('No se pudo refrescar la interfaz tras sincronizar')
+        self.after(120, self.process_asset_events)
+
+    def refresh_remote_assets(self, changed=None):
+        """Actualiza solamente tarjetas y ficha afectadas por los archivos recibidos."""
+        if changed is None:
+            changed = set()
+        cover_paths = [p for p in changed if p.startswith('imagenes/')]
+        if cover_paths:
+            for game_name, label in list(self.cover_cards.items()):
+                if any(Path(p).stem in image_stems(game_name) for p in cover_paths):
+                    photo = self.load_cover(game_name, 140, 185)
+                    label.config(image=photo if photo is not None else '',
+                                 text='' if photo else 'SIN\nCARÁTULA',
+                                 width=0 if photo else 17,
+                                 height=0 if photo else 10)
+                    label.image = photo
         if self.selected:
             game = self.selected
-            photo = self.load_cover(game['name'], 225, 315)
-            self.detail_cover.config(image=photo if photo is not None else '',
-                                     text='' if photo else 'SIN CARÁTULA')
-            self.detail_cover.image = photo
-            self.render_screenshots(game)
-            self.show_game_data(game)
-            # Actualizar sinopsis cuando termina su descarga asíncrona.
-            if not self.synopsis_full:
+            stems = set(image_stems(game['name']))
+            if any(p.startswith('imagenes/') and Path(p).stem in stems for p in changed):
+                photo = self.load_cover(game['name'], 225, 315)
+                self.detail_cover.config(image=photo if photo is not None else '',
+                                         text='' if photo else 'SIN CARÁTULA')
+                self.detail_cover.image = photo
+            if any(p.startswith('capturas/') and len(Path(p).parts) > 2
+                   and Path(p).parts[1] in stems for p in changed):
+                self.render_screenshots(game)
+            if any(p.startswith('datos/') and Path(p).stem in stems for p in changed):
+                self.show_game_data(game)
+            if any(p.startswith('sinopsis/') and Path(p).stem in stems for p in changed):
                 self.show_synopsis(game)
 
     def load_catalog(self):
@@ -1018,6 +1080,7 @@ class App(tk.Tk):
         for widget in self.grid_frame.winfo_children():
             widget.destroy()
         self.images = []
+        self.cover_cards = {}
         text = self.search.get().strip().casefold()
         filtered = [g for g in self.games if text in g['name'].casefold() or any(text in e['name'].casefold() for e in g['extras'])]
         cols = max(1, self.last_columns or 3)
@@ -1032,6 +1095,7 @@ class App(tk.Tk):
                 cover = tk.Label(card, text='SIN\nCARÁTULA', fg=MUTED, bg=PANEL,
                                  width=17, height=10, font=('Segoe UI', 11, 'bold'), cursor='hand2')
             cover.pack()
+            self.cover_cards[game['name']] = cover
             title = tk.Label(card, text=game['name'], fg=FG, bg=CARD,
                              wraplength=145, width=20, height=3,
                              font=('Segoe UI', 9), cursor='hand2')
