@@ -1,4 +1,4 @@
-# Juegos Torrent Visual 1.9 - Biblioteca remota con caché local. No modifica catalogo.ps1.
+# Juegos Torrent 2.4 - Biblioteca remota con bienvenida PC Gaming. No modifica catalogo.ps1.
 import re
 import random
 import os
@@ -320,7 +320,7 @@ def download_file(url, destination, on_progress):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.2')
+        self.title('Juegos Torrent 2.3')
         self.geometry('1280x800')
         try:
             self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
@@ -419,6 +419,42 @@ class App(tk.Tk):
         detail_frame.bind('<Configure>', lambda _: detail_canvas.configure(scrollregion=detail_canvas.bbox('all')))
         detail_canvas.bind('<Configure>', lambda event: detail_canvas.itemconfigure(detail_window, width=event.width))
         self.detail_canvas = detail_canvas
+        # Bienvenida 2.4: portada con imagen local y tipografía nativa.
+        # Es una capa independiente; las fichas existentes no se modifican.
+        self.welcome = tk.Frame(right, bg=PANEL, bd=0)
+        self.welcome_photo = None
+        self.welcome_banner_original = None
+        banner_path = ASSETS / 'bienvenida_pc.jpg'
+        if Image is not None and ImageTk is not None and banner_path.is_file():
+            try:
+                self.welcome_banner_original = Image.open(banner_path).convert('RGB')
+            except (OSError, ValueError):
+                logging.exception('No se pudo cargar la imagen de bienvenida')
+
+        self.welcome_hero = tk.Canvas(self.welcome, bg=PANEL, bd=0,
+                                      highlightthickness=0, height=250)
+        self.welcome_hero.pack(fill='both', expand=True)
+        self.welcome_hero.bind('<Configure>', self.redraw_welcome_hero)
+
+        welcome_bottom = tk.Frame(self.welcome, bg=PANEL)
+        welcome_bottom.pack(fill='both', expand=True, padx=12, pady=(0, 18))
+        tk.Label(welcome_bottom, text='JUEGOS TORRENT', fg=FG, bg=PANEL,
+                 font=('Bahnschrift SemiBold', 34, 'bold')).pack(pady=(0, 4))
+        tk.Label(welcome_bottom, text='TU BIBLIOTECA DE VIDEOJUEGOS', fg=MUTED, bg=PANEL,
+                 font=('Bahnschrift', 13, 'bold')).pack(pady=(0, 20))
+        tk.Frame(welcome_bottom, bg=ACCENT, width=115, height=2).pack(pady=(0, 20))
+        tk.Label(welcome_bottom,
+                 text='EXPLORÁ EL CATÁLOGO   ·   DESCUBRÍ NUEVOS TÍTULOS',
+                 fg=FG, bg=PANEL, font=('Bahnschrift', 11)).pack(pady=(0, 7))
+        tk.Label(welcome_bottom,
+                 text='CONSULTÁ CARACTERÍSTICAS, CAPTURAS Y SINOPSIS',
+                 fg=MUTED, bg=PANEL, font=('Bahnschrift', 10)).pack(pady=(0, 23))
+        tk.Label(welcome_bottom, text='▶  SELECCIONÁ UN JUEGO PARA COMENZAR',
+                 fg=ACCENT, bg='#152c27', font=('Bahnschrift SemiBold', 12, 'bold'),
+                 padx=20, pady=12, highlightbackground=ACCENT,
+                 highlightcolor=ACCENT, highlightthickness=1).pack()
+        self.welcome.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.welcome.lift()
 
         tk.Label(detail_frame, text='FICHA DEL JUEGO', fg=ACCENT, bg=PANEL,
                  font=('Segoe UI', 14, 'bold')).pack(anchor='w', padx=18, pady=(18, 8))
@@ -572,11 +608,40 @@ class App(tk.Tk):
         tk.Button(self.instructions_tab, text='Copiar texto', command=self.copy_text,
                   bg=CARD, fg=FG, relief='flat', pady=7).pack(fill='x', padx=8, pady=(0, 10))
 
-        self.status = tk.Label(self, text='Preparando biblioteca...', bg=BG, fg=MUTED,
+        # Barra inferior persistente: estado a la izquierda, créditos discretos a la derecha.
+        status_bar = tk.Frame(self, bg=BG)
+        status_bar.pack(fill='x', padx=22, pady=(0, 12))
+        self.status = tk.Label(status_bar, text='Preparando biblioteca...', bg=BG, fg=MUTED,
                                anchor='w', font=('Segoe UI', 10))
-        self.status.pack(fill='x', padx=22, pady=(0, 12))
+        self.status.pack(side='left', fill='x', expand=True)
+        tk.Label(status_bar, text='MaelstromxXx & ChatGPT', bg=BG, fg='#728296',
+                 anchor='e', font=('Segoe UI', 8)).pack(side='right', padx=(12, 0))
         self.load_catalog()
         self.load_remote_manifest()
+
+    def redraw_welcome_hero(self, event=None):
+        """Escala la foto de bienvenida al panel, sin tocar las fichas."""
+        if self.welcome_banner_original is None:
+            self.welcome_hero.delete('all')
+            self.welcome_hero.create_text(self.welcome_hero.winfo_width() // 2,
+                                          self.welcome_hero.winfo_height() // 2,
+                                          text='PC GAMING', fill=ACCENT,
+                                          font=('Bahnschrift SemiBold', 28, 'bold'))
+            return
+        width = self.welcome_hero.winfo_width()
+        height = self.welcome_hero.winfo_height()
+        if width < 2 or height < 2:
+            return
+        original = self.welcome_banner_original
+        # Cubrir el área manteniendo proporciones, con recorte centrado.
+        scale = max(width / original.width, height / original.height)
+        nw, nh = max(1, round(original.width * scale)), max(1, round(original.height * scale))
+        resized = original.resize((nw, nh), Image.Resampling.LANCZOS)
+        left, top = (nw - width) // 2, (nh - height) // 2
+        cropped = resized.crop((left, top, left + width, top + height))
+        self.welcome_photo = ImageTk.PhotoImage(cropped, master=self)
+        self.welcome_hero.delete('all')
+        self.welcome_hero.create_image(0, 0, image=self.welcome_photo, anchor='nw')
 
     def scroll_over_tabs(self, event):
         self.detail_canvas.yview_scroll(-1 * int(event.delta / 120), 'units')
@@ -995,6 +1060,9 @@ class App(tk.Tk):
         self.status.config(text=f'Mostrando {len(filtered)} de {len(self.games)} juegos · {sum(len(g["extras"]) for g in self.games)} complementos agrupados')
 
     def select_game(self, game):
+        # Primera selección: retiramos la bienvenida y dejamos la ficha intacta.
+        if self.welcome.winfo_manager():
+            self.welcome.place_forget()
         self.selected = game
         self.detail_title.config(text=game['name'])
         self.download_button.config(state='disabled' if self.busy else 'normal',
