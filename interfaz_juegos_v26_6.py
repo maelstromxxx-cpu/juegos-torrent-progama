@@ -376,7 +376,7 @@ def _genres(raw):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.6.3')
+        self.title('Juegos Torrent 2.6.6')
         self.geometry('1280x800')
         try:
             self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
@@ -541,8 +541,21 @@ class App(tk.Tk):
         self.welcome.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.welcome.lift()
 
-        tk.Label(detail_frame, text='FICHA DEL JUEGO', fg=ACCENT, bg=PANEL,
-                 font=('Segoe UI', 14, 'bold')).pack(anchor='w', padx=18, pady=(18, 8))
+        # Cabecera gráfica adaptable al ancho real del panel derecho.
+        # Se mantiene el archivo PNG externo para intercambiar diseños libremente.
+        self.ficha_header_path = ASSETS / 'ficha_titulo_gaming.png'
+        self.ficha_header_original = None
+        self.ficha_header_image = None
+        if Image is not None and ImageTk is not None and self.ficha_header_path.is_file():
+            try:
+                with Image.open(self.ficha_header_path) as source:
+                    self.ficha_header_original = source.convert('RGBA')
+            except (OSError, ValueError):
+                logging.exception('No se pudo abrir la imagen de cabecera')
+        self.ficha_header = tk.Canvas(detail_frame, bg='#20372f', height=57,
+                                      highlightthickness=0, bd=0)
+        self.ficha_header.pack(fill='x', padx=0, pady=(0, 15))
+        self.ficha_header.bind('<Configure>', self.redraw_ficha_header)
         self.detail_title = tk.Label(detail_frame, text='', fg=FG, bg=PANEL,
                                      wraplength=630, justify='center', font=('Segoe UI', 16, 'bold'))
         self.detail_title.pack(fill='x', padx=18, pady=(0, 6))
@@ -703,6 +716,43 @@ class App(tk.Tk):
                  anchor='e', font=('Segoe UI', 8)).pack(side='right', padx=(12, 0))
         self.load_catalog()
         self.load_remote_manifest()
+
+    def redraw_ficha_header(self, event=None):
+        """Ajusta el PNG a todo el ancho de la ficha, también al mover el divisor."""
+        canvas = self.ficha_header
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width < 2 or height < 2:
+            return
+        canvas.delete('all')
+        if self.ficha_header_original is not None and ImageTk is not None:
+            # Escalado independiente de ancho y alto: sin franjas laterales.
+            # La altura es constante; el ancho sigue al panel automáticamente.
+            resized = self.ficha_header_original.resize((width, height), Image.Resampling.LANCZOS)
+            self.ficha_header_image = ImageTk.PhotoImage(resized, master=self)
+            canvas.create_image(0, 0, image=self.ficha_header_image, anchor='nw')
+        else:
+            # Fallback nativo si Pillow no está instalado. Tkinter no admite
+            # escalado arbitrario; se rellena el ancho con un fondo integrado.
+            if self.ficha_header_path.is_file():
+                try:
+                    original = tk.PhotoImage(file=str(self.ficha_header_path), master=self)
+                    # zoom/subsample permite aproximar la anchura sin Pillow.
+                    from math import gcd
+                    scale_gcd = gcd(width, original.width())
+                    numerator = min(12, max(1, round(width / max(1, original.width()) * 6)))
+                    scaled = original.zoom(numerator).subsample(6)
+                    if scaled.width() > width:
+                        scaled = scaled.subsample(max(1, (scaled.width() + width - 1) // width))
+                    self.ficha_header_image = scaled
+                    canvas.create_image(width // 2, height // 2, image=scaled, anchor='center')
+                except tk.TclError:
+                    canvas.create_text(width // 2, height // 2, text='FICHA DEL JUEGO',
+                                       fill=ACCENT, font=('Impact', 19))
+            else:
+                canvas.create_text(width // 2, height // 2, text='FICHA DEL JUEGO',
+                                   fill=ACCENT, font=('Impact', 19))
+        canvas.create_line(0, height - 1, width, height - 1, fill=ACCENT, width=2)
 
     def redraw_welcome_hero(self, event=None):
         """Muestra el flyer completo, sin recortar logo, letras ni boton."""
