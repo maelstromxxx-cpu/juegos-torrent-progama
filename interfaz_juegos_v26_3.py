@@ -1,4 +1,4 @@
-# Juegos Torrent 2.5.2 - Biblioteca remota con bienvenida PC Gaming. No modifica catalogo.ps1.
+# Juegos Torrent 2.6 - Biblioteca remota con bienvenida PC Gaming. No modifica catalogo.ps1.
 import re
 import random
 import os
@@ -255,13 +255,15 @@ def find_game_data(name):
             result = {}
             keys = {'año': 'anio', 'ano': 'anio', 'género': 'genero',
                     'genero': 'genero', 'tamaño': 'tamano', 'tamano': 'tamano',
-                    'modo': 'modo', 'idioma': 'idioma'}
+                    'modo': 'modo', 'idioma': 'idioma',
+                    'incorporación': 'incorporacion', 'incorporacion': 'incorporacion',
+                    'fecha de incorporación': 'incorporacion', 'fecha de incorporacion': 'incorporacion'}
             for line in raw.splitlines():
                 key, sep, value = line.partition(':')
                 if sep and key.strip().casefold() in keys:
                     normalized = keys[key.strip().casefold()]
                     if value.strip():
-                        clean_value = value.strip()[:80]
+                        clean_value = value.strip() if normalized == 'genero' else value.strip()[:80]
                         if normalized == 'idioma':
                             aliases = {'español': 'Español', 'espanol': 'Español',
                                        'ingles': 'Ingles', 'inglés': 'Ingles', 'multi': 'MULTI'}
@@ -340,10 +342,41 @@ def download_file(url, destination, on_progress):
             temp_path.unlink(missing_ok=True)
 
 
+def _number_size_gb(raw):
+    """Convierte tamaños de texto como '55,4 GB', '900 MB' o '1.2 TB'."""
+    match = re.search(r'(\d+(?:[.,]\d+)?)\s*(TB|GB|MB|KB|GIB|MIB|TIB)\b', raw, re.I)
+    if not match:
+        return None
+    value = float(match.group(1).replace(',', '.'))
+    unit = match.group(2).upper()
+    return value * {'TB': 1024, 'TIB': 1024, 'GB': 1, 'GIB': 1,
+                    'MB': 1/1024, 'MIB': 1/1024, 'KB': 1/1048576}[unit]
+
+
+def _year(raw):
+    match = re.search(r'\b(?:19|20)\d{2}\b', raw)
+    return int(match.group()) if match else None
+
+
+def _date(raw):
+    """Acepta YYYY-MM-DD y DD/MM/YYYY."""
+    from datetime import datetime
+    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y'):
+        try:
+            return datetime.strptime(raw.strip(), fmt).date().toordinal()
+        except ValueError:
+            pass
+    return None
+
+
+def _genres(raw):
+    return [part.strip() for part in re.split(r'[,;/|]+', raw) if part.strip()]
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.5.2')
+        self.title('Juegos Torrent 2.6.3')
         self.geometry('1280x800')
         try:
             self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
@@ -370,6 +403,9 @@ class App(tk.Tk):
         self.busy = False
         self.text_request = 0
         self.search = tk.StringVar()
+        self.genre_filter = tk.StringVar(value='Todos los géneros')
+        self.sort_mode = tk.StringVar(value='Nombre (A-Z)')
+        self.game_metadata = {}
         self.search.trace_add('write', lambda *_: self.render_games())
 
         top = tk.Frame(self, bg=BG)
@@ -421,6 +457,49 @@ class App(tk.Tk):
                 left_width = min(980, width - 500)
                 body.sash_place(0, max(370, left_width), 1)
         self.after(180, set_initial_split)
+
+        # Selectores integrados, a la derecha y con la paleta de Juegos Torrent.
+        filters = tk.Frame(left, bg=BG)
+        filters.pack(fill='x', padx=(0, 9), pady=(0, 9))
+        filter_style = ttk.Style(self)
+        if 'clam' in filter_style.theme_names():
+            filter_style.theme_use('clam')
+        filter_style.configure('JuegosFiltro.TCombobox',
+                               fieldbackground=CARD, background=CARD,
+                               foreground=FG, arrowcolor=ACCENT,
+                               bordercolor=ACCENT, lightcolor=CARD,
+                               darkcolor=CARD, selectbackground=CARD,
+                               selectforeground=FG, padding=(9, 7),
+                               relief='flat', font=('Segoe UI', 10))
+        filter_style.map('JuegosFiltro.TCombobox',
+                         fieldbackground=[('readonly', CARD)],
+                         foreground=[('readonly', FG)],
+                         background=[('readonly', CARD), ('active', PANEL)],
+                         arrowcolor=[('readonly', ACCENT), ('active', ACCENT)],
+                         selectbackground=[('readonly', CARD)],
+                         selectforeground=[('readonly', FG)])
+        self.option_add('*TCombobox*Listbox.background', CARD)
+        self.option_add('*TCombobox*Listbox.foreground', FG)
+        self.option_add('*TCombobox*Listbox.selectBackground', ACCENT)
+        self.option_add('*TCombobox*Listbox.selectForeground', BG)
+        self.genre_display = tk.StringVar(value='Género: Todos los géneros')
+        self.sort_display = tk.StringVar(value='Ordenar por: Nombre (A-Z)')
+        sort_options = ['Nombre (A-Z)', 'Nombre (Z-A)', 'Año (más recientes)',
+                        'Año (más antiguos)', 'Incorporación (recientes)',
+                        'Incorporación (antiguos)', 'Tamaño (mayor)', 'Tamaño (menor)']
+        self.sort_combo = ttk.Combobox(filters, textvariable=self.sort_display,
+                                       state='readonly', width=28,
+                                       style='JuegosFiltro.TCombobox',
+                                       values=sort_options)
+        self.sort_combo.pack(side='right')
+        self.sort_combo.bind('<<ComboboxSelected>>', self.on_sort_selected)
+        self.genre_combo = ttk.Combobox(filters, textvariable=self.genre_display,
+                                        state='readonly', width=25,
+                                        style='JuegosFiltro.TCombobox',
+                                        values=['Todos los géneros'])
+        self.genre_combo.pack(side='right', padx=(0, 12))
+        self.genre_combo.bind('<<ComboboxSelected>>', self.on_genre_selected)
+
 
         self.canvas = tk.Canvas(left, bg=BG, highlightthickness=0)
         bar = ttk.Scrollbar(left, orient='vertical', command=self.canvas.yview)
@@ -1030,6 +1109,12 @@ class App(tk.Tk):
         for key, (slot, label) in self.info_values.items():
             value = data.get(key)
             if value:
+                if key == 'genero':
+                    # Los filtros usan todos los géneros; la barra rápida muestra
+                    # solamente 2 o 3 para mantener su diseño compacto.
+                    genres = _genres(value)
+                    first_three = ' / '.join(genres[:3])
+                    value = first_three if len(first_three) <= 36 else ' / '.join(genres[:2])
                 label.config(text=value)
                 slot.pack(side='left', padx=(0, 12))
             else:
@@ -1074,6 +1159,54 @@ class App(tk.Tk):
             else:
                 self.synopsis_button.pack_forget()
 
+    def on_genre_selected(self, _event=None):
+        chosen = self.genre_display.get().removeprefix('Género: ')
+        self.genre_filter.set(chosen)
+        self.genre_display.set('Género: ' + chosen)
+        self.render_games()
+
+    def on_sort_selected(self, _event=None):
+        chosen = self.sort_display.get().removeprefix('Ordenar por: ')
+        self.sort_mode.set(chosen)
+        self.sort_display.set('Ordenar por: ' + chosen)
+        self.render_games()
+
+    def refresh_classification(self):
+        # Se consulta desde disco: los TXT descargados por la sincronización
+        # se reflejan en los filtros sin reiniciar el programa.
+        self.game_metadata = {g['name']: find_game_data(g['name']) for g in self.games}
+        genres = {}
+        for data in self.game_metadata.values():
+            for genre in _genres(data.get('genero', '')):
+                genres.setdefault(genre.casefold(), genre)
+        choices = ['Todos los géneros'] + sorted(genres.values(), key=str.casefold)
+        self.genre_combo.configure(values=choices)
+        if self.genre_filter.get() not in choices:
+            self.genre_filter.set('Todos los géneros')
+        self.genre_display.set('Género: ' + self.genre_filter.get())
+
+    def sort_games(self, games):
+        mode = self.sort_mode.get()
+        if mode == 'Nombre (Z-A)':
+            return sorted(games, key=lambda g: g['name'].casefold(), reverse=True)
+        if mode == 'Nombre (A-Z)':
+            return sorted(games, key=lambda g: g['name'].casefold())
+        if mode.startswith('Año'):
+            reverse = mode == 'Año (más recientes)'
+            getter = lambda d: _year(d.get('anio', ''))
+        elif mode.startswith('Incorporación'):
+            reverse = mode == 'Incorporación (recientes)'
+            getter = lambda d: _date(d.get('incorporacion', ''))
+        else:
+            reverse = mode == 'Tamaño (mayor)'
+            getter = lambda d: _number_size_gb(d.get('tamano', ''))
+        # Los juegos sin el dato se muestran siempre al final.
+        return sorted(games, key=lambda g: (
+            getter(self.game_metadata.get(g['name'], {})) is None,
+            -(getter(self.game_metadata.get(g['name'], {})) or 0) if reverse
+            else (getter(self.game_metadata.get(g['name'], {})) or 0),
+            g['name'].casefold()))
+
     def render_games(self):
         if not hasattr(self, 'grid_frame'):
             return
@@ -1081,8 +1214,14 @@ class App(tk.Tk):
             widget.destroy()
         self.images = []
         self.cover_cards = {}
+        self.refresh_classification()
         text = self.search.get().strip().casefold()
-        filtered = [g for g in self.games if text in g['name'].casefold() or any(text in e['name'].casefold() for e in g['extras'])]
+        genre = self.genre_filter.get().casefold()
+        filtered = [g for g in self.games
+                    if (text in g['name'].casefold() or any(text in e['name'].casefold() for e in g['extras']))
+                    and (genre == 'todos los géneros' or genre in
+                         [x.casefold() for x in _genres(self.game_metadata.get(g['name'], {}).get('genero', ''))])]
+        filtered = self.sort_games(filtered)
         cols = max(1, self.last_columns or 3)
         for i, game in enumerate(filtered):
             card = tk.Frame(self.grid_frame, bg=CARD, padx=8, pady=8, cursor='hand2')

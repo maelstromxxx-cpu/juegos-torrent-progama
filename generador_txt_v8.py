@@ -5,6 +5,7 @@ import os
 import tempfile
 import tkinter as tk
 from pathlib import Path
+from datetime import date
 from tkinter import filedialog, messagebox, ttk
 
 try:
@@ -14,13 +15,13 @@ except ImportError:
 
 CONFIG = Path.home() / '.generador_txt_config.json'
 SECCIONES = ('DATOS', 'SINOPSIS', 'INSTRUCCIONES', 'UPDATES')
-PLANTILLA_DATOS = 'Año:\nGénero:\nTamaño:\nModo:\nIdioma:\n'
+PLANTILLA_DATOS = 'Año:\nGénero:\nTamaño:\nModo:\nIdioma:\nFecha de incorporación: {fecha}\n'
 FORMATOS = ('.jpg', '.jpeg', '.png', '.webp')
 
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Generador de TXT, portadas, capturas y torrents - v7')
+        self.title('Generador de TXT, portadas, capturas y torrents - v8')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -67,7 +68,7 @@ class Generador(tk.Tk):
             caja = tk.Text(panel, wrap='word', undo=True, font=('Segoe UI', 10), height=13)
             caja.grid(row=3, column=0, sticky='nsew', pady=(3, 8))
             if seccion == 'DATOS':
-                caja.insert('1.0', PLANTILLA_DATOS)
+                caja.insert('1.0', PLANTILLA_DATOS.format(fecha=date.today().isoformat()))
                 caja.edit_reset()
             self.menu_contextual(caja)
             ttk.Label(panel, text='Carpeta de destino:').grid(row=4, column=0, sticky='w')
@@ -262,7 +263,7 @@ class Generador(tk.Tk):
         for seccion, caja, _ in self.paneles:
             caja.delete('1.0', 'end')
             if seccion == 'DATOS':
-                caja.insert('1.0', PLANTILLA_DATOS)
+                caja.insert('1.0', PLANTILLA_DATOS.format(fecha=date.today().isoformat()))
             caja.edit_reset()
             caja.edit_modified(False)
         self.quitar_portada()
