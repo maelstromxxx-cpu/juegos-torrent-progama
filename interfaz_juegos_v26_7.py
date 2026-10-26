@@ -202,6 +202,17 @@ def group_catalog(entries):
     return games
 
 
+def split_game_title(name):
+    """Separa solo los bloques [...] para mostrar un título limpio.
+
+    No modifica el nombre original, que sigue usándose para archivos,
+    búsqueda, descargas y sincronización.
+    """
+    details = [part.strip() for part in re.findall(r'\[([^\[\]]*)\]', name) if part.strip()]
+    clean_title = re.sub(r'\s*\[[^\[\]]*\]', '', name).strip()
+    return clean_title or name.strip(), ' · '.join(details)
+
+
 def image_stems(name):
     """Acepta nombre exacto o nombre sin datos entre corchetes."""
     def clean(text):
@@ -376,7 +387,7 @@ def _genres(raw):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.6.6')
+        self.title('Juegos Torrent 2.6.7')
         self.geometry('1280x800')
         try:
             self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
@@ -559,7 +570,8 @@ class App(tk.Tk):
         self.detail_title = tk.Label(detail_frame, text='', fg=FG, bg=PANEL,
                                      wraplength=630, justify='center', font=('Segoe UI', 16, 'bold'))
         self.detail_title.pack(fill='x', padx=18, pady=(0, 6))
-        self.detail_type = tk.Label(detail_frame, text='', fg=MUTED, bg=PANEL, font=('Segoe UI', 10))
+        self.detail_type = tk.Label(detail_frame, text='', fg=MUTED, bg=PANEL,
+                                    wraplength=630, justify='center', font=('Segoe UI', 10))
         self.detail_type.pack(anchor='center', padx=18, pady=(0, 12))
 
         # Una sola fila: carátula a la izquierda, capturas a la derecha.
@@ -1178,6 +1190,7 @@ class App(tk.Tk):
         # El texto acompaña al ancho disponible al redimensionar la ventana.
         self.synopsis_label.config(wraplength=max(230, event.width - 52))
         self.detail_title.config(wraplength=max(230, event.width - 52))
+        self.detail_type.config(wraplength=max(230, event.width - 52))
 
     def show_synopsis(self, game):
         self.synopsis_full = find_synopsis(game['name'])
@@ -1285,7 +1298,7 @@ class App(tk.Tk):
                                  width=17, height=10, font=('Segoe UI', 11, 'bold'), cursor='hand2')
             cover.pack()
             self.cover_cards[game['name']] = cover
-            title = tk.Label(card, text=game['name'], fg=FG, bg=CARD,
+            title = tk.Label(card, text=split_game_title(game['name'])[0], fg=FG, bg=CARD,
                              wraplength=145, width=20, height=3,
                              font=('Segoe UI', 9), cursor='hand2')
             title.pack(pady=(7, 0))
@@ -1301,7 +1314,8 @@ class App(tk.Tk):
         if self.welcome.winfo_manager():
             self.welcome.place_forget()
         self.selected = game
-        self.detail_title.config(text=game['name'])
+        clean_title, extra_info = split_game_title(game['name'])
+        self.detail_title.config(text=clean_title)
         self.download_button.config(state='disabled' if self.busy else 'normal',
                                     text=self.action_label(game, complement=False))
         self.guide_button.place_forget()
@@ -1312,7 +1326,11 @@ class App(tk.Tk):
             # Alineado verticalmente con Descargas / Instrucciones.
             self.guide_button.place(in_=self.tabs, relx=1.0, x=-8, y=4, anchor='ne')
             self.guide_button.lift()
-        self.detail_type.config(text='Tipo de entrada: ' + game['type'])
+        self.detail_type.config(text=extra_info)
+        if extra_info:
+            self.detail_type.pack(anchor='center', padx=18, pady=(0, 12))
+        else:
+            self.detail_type.pack_forget()
         photo = self.load_cover(game['name'], 225, 315)
         self.detail_cover.config(image=photo if photo is not None else '',
                                  text='' if photo else 'SIN CARÁTULA')
