@@ -415,7 +415,7 @@ class App(tk.Tk):
         self.text_request = 0
         self.search = tk.StringVar()
         self.genre_filter = tk.StringVar(value='Todos los géneros')
-        self.sort_mode = tk.StringVar(value='Nombre (A-Z)')
+        self.sort_mode = tk.StringVar(value='Incorporación (recientes)')
         self.game_metadata = {}
         self.search.trace_add('write', lambda *_: self.render_games())
 
@@ -493,8 +493,8 @@ class App(tk.Tk):
         self.option_add('*TCombobox*Listbox.foreground', FG)
         self.option_add('*TCombobox*Listbox.selectBackground', ACCENT)
         self.option_add('*TCombobox*Listbox.selectForeground', BG)
-        self.genre_display = tk.StringVar(value='Género: Todos los géneros')
-        self.sort_display = tk.StringVar(value='Ordenar por: Nombre (A-Z)')
+        self.genre_display = tk.StringVar(value='Todos los géneros')
+        self.sort_display = tk.StringVar(value='Incorporación (recientes)')
         sort_options = ['Nombre (A-Z)', 'Nombre (Z-A)', 'Año (más recientes)',
                         'Año (más antiguos)', 'Incorporación (recientes)',
                         'Incorporación (antiguos)', 'Tamaño (mayor)', 'Tamaño (menor)']
@@ -1223,15 +1223,15 @@ class App(tk.Tk):
                 self.synopsis_button.pack_forget()
 
     def on_genre_selected(self, _event=None):
-        chosen = self.genre_display.get().removeprefix('Género: ')
+        chosen = self.genre_display.get()
         self.genre_filter.set(chosen)
-        self.genre_display.set('Género: ' + chosen)
+        self.genre_display.set(chosen)
         self.render_games()
 
     def on_sort_selected(self, _event=None):
-        chosen = self.sort_display.get().removeprefix('Ordenar por: ')
+        chosen = self.sort_display.get()
         self.sort_mode.set(chosen)
-        self.sort_display.set('Ordenar por: ' + chosen)
+        self.sort_display.set(chosen)
         self.render_games()
 
     def refresh_classification(self):
@@ -1246,7 +1246,7 @@ class App(tk.Tk):
         self.genre_combo.configure(values=choices)
         if self.genre_filter.get() not in choices:
             self.genre_filter.set('Todos los géneros')
-        self.genre_display.set('Género: ' + self.genre_filter.get())
+        self.genre_display.set(self.genre_filter.get())
 
     def sort_games(self, games):
         mode = self.sort_mode.get()
