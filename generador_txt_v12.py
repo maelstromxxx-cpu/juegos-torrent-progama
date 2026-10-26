@@ -6,6 +6,7 @@ import tempfile
 import tkinter as tk
 from pathlib import Path
 from datetime import date
+from urllib.parse import urlparse, parse_qs, unquote
 from tkinter import filedialog, messagebox, ttk
 
 try:
@@ -21,7 +22,7 @@ FORMATOS = ('.jpg', '.jpeg', '.png', '.webp')
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Generador de TXT, portadas, capturas y torrents - v9')
+        self.title('Generador de TXT, portadas, capturas y torrents - v12')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -131,7 +132,94 @@ class Generador(tk.Tk):
         acciones.pack(pady=12)
         ttk.Button(acciones, text='GUARDAR TODOS', command=self.guardar).pack(side='left', padx=8, ipadx=30, ipady=7)
         ttk.Button(acciones, text='LIMPIAR TODO', command=self.confirmar_limpieza).pack(side='left', padx=8, ipadx=20, ipady=7)
+        ttk.Button(acciones, text='GENERADOR DE ID', command=self.abrir_generador_ids).pack(side='left', padx=8, ipadx=18, ipady=7)
         self.protocol('WM_DELETE_WINDOW', self.cerrar)
+
+    @staticmethod
+    def obtener_id_drive(enlace):
+        enlace = enlace.strip()
+        if not enlace:
+            raise ValueError('Falta pegar uno de los enlaces de Google Drive.')
+        url = urlparse(enlace)
+        if (url.hostname or '').lower() not in ('drive.google.com', 'docs.google.com'):
+            raise ValueError('El enlace no pertenece a Google Drive.')
+        identificador = parse_qs(url.query).get('id', [''])[0]
+        if not identificador:
+            partes = [unquote(x) for x in url.path.split('/') if x]
+            for i, parte in enumerate(partes[:-1]):
+                if parte in ('d', 'folders'):
+                    identificador = partes[i + 1]
+                    break
+        if not re.fullmatch(r'[A-Za-z0-9_-]{10,}', identificador):
+            raise ValueError('No se encontró un ID válido en el enlace.')
+        return identificador
+
+    def abrir_generador_ids(self):
+        # Una ventana por vez; no bloquea el uso del resto de Windows.
+        if getattr(self, 'ventana_ids', None) and self.ventana_ids.winfo_exists():
+            self.ventana_ids.lift()
+            self.ventana_ids.focus_force()
+            return
+        ventana = tk.Toplevel(self)
+        self.ventana_ids = ventana
+        ventana.title('Generador de ID - Google Drive')
+        ventana.geometry('770x315')
+        ventana.minsize(580, 290)
+        ventana.transient(self)
+        ventana.columnconfigure(0, weight=1)
+        cuerpo = ttk.Frame(ventana, padding=18)
+        cuerpo.pack(fill='both', expand=True)
+        cuerpo.columnconfigure(0, weight=1)
+        torrent = tk.StringVar()
+        instrucciones = tk.StringVar()
+        resultado = tk.StringVar()
+        ttk.Label(cuerpo, text='Enlace de Drive del TORRENT:').grid(row=0, column=0, sticky='w')
+        campo_torrent = ttk.Entry(cuerpo, textvariable=torrent)
+        campo_torrent.grid(row=1, column=0, sticky='ew', pady=(3, 12))
+        self.menu_contextual(campo_torrent)
+        ttk.Label(cuerpo, text='Enlace de Drive de las INSTRUCCIONES:').grid(row=2, column=0, sticky='w')
+        campo_instrucciones = ttk.Entry(cuerpo, textvariable=instrucciones)
+        campo_instrucciones.grid(row=3, column=0, sticky='ew', pady=(3, 12))
+        self.menu_contextual(campo_instrucciones)
+        ttk.Label(cuerpo, text='Resultado (uno o dos ID, separados por | si corresponde):').grid(row=5, column=0, sticky='w', pady=(9, 0))
+        salida = ttk.Entry(cuerpo, textvariable=resultado, state='readonly')
+        salida.grid(row=6, column=0, sticky='ew', pady=(4, 12))
+        self.menu_contextual(salida)
+
+        def generar():
+            resultado.set('')
+            enlace_torrent = torrent.get().strip()
+            enlace_instrucciones = instrucciones.get().strip()
+            if not enlace_torrent and not enlace_instrucciones:
+                messagebox.showwarning('Faltan enlaces', 'Pegá al menos un enlace de Google Drive.', parent=ventana)
+                return
+            try:
+                id_torrent = self.obtener_id_drive(enlace_torrent) if enlace_torrent else ''
+                id_instrucciones = self.obtener_id_drive(enlace_instrucciones) if enlace_instrucciones else ''
+                resultado.set(f'{id_torrent}|{id_instrucciones}' if id_torrent and id_instrucciones else (id_torrent or id_instrucciones))
+            except ValueError as error:
+                messagebox.showerror('Enlace inválido', str(error), parent=ventana)
+
+        def copiar():
+            if not resultado.get():
+                messagebox.showwarning('Sin resultado', 'Primero generá al menos un ID.', parent=ventana)
+                return
+            self.clipboard_clear()
+            self.clipboard_append(resultado.get())
+            self.update_idletasks()
+            estado.configure(text='¡Resultado copiado al portapapeles!')
+
+        ttk.Button(cuerpo, text='GENERAR ID', command=generar).grid(row=4, column=0, pady=(0, 1))
+        acciones_ids = ttk.Frame(cuerpo)
+        acciones_ids.grid(row=7, column=0)
+        ttk.Button(acciones_ids, text='COPIAR RESULTADO', command=copiar).pack(side='left', padx=8)
+        ttk.Button(acciones_ids, text='CERRAR', command=ventana.destroy).pack(side='left', padx=8)
+        estado = ttk.Label(cuerpo, text='')
+        estado.grid(row=8, column=0, pady=(6, 0))
+        campo_torrent.bind('<Return>', lambda e: campo_instrucciones.focus_set())
+        campo_instrucciones.bind('<Return>', lambda e: generar())
+        campo_torrent.focus_set()
+        ventana.lift()
 
     def menu_contextual(self, widget):
         menu = tk.Menu(widget, tearoff=False)
@@ -361,6 +449,7 @@ class Generador(tk.Tk):
             mensaje += f'\n\nCarpeta de capturas: {carpeta_capturas}'
         self.limpiar_formulario()
         messagebox.showinfo('Guardado completo', mensaje)
+        self.abrir_generador_ids()
 
     def cerrar(self):
         self.guardar_configuracion()
