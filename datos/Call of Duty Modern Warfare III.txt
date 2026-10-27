@@ -1,8 +1,0 @@
-Año: 2023
-Género: Acción / Shooter / Multijugador
-Tamaño: 39GB
-Modo: Singleplayer / Multiplayer
-Idioma: MULTI
-Fecha de incorporación: 26/10/2026
-Puntuación: 6,5
-Metacritic: 56

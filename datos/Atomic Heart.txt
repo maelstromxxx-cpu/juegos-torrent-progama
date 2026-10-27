@@ -1,8 +1,0 @@
-Año: 2023
-Género: Acción / Aventura / Shooter / Rol / FPS
-Tamaño: 60GB
-Modo: Singleplayer
-Idioma: Español
-Fecha de incorporación: 25/10/2026
-Puntuación: 7,8
-Metacritic: 78

@@ -1,8 +1,0 @@
-Año: 2025
-Género: Acción / Shooter / FPS / Tercera Persona / Táctico / Sigilo / Francotirador / Multijugador
-Tamaño: 50GB
-Modo: Singleplayer / Multiplayer
-Idioma: MULTI
-Fecha de incorporación: 26/10/2026
-Puntuación: 8,6
-Metacritic: 82
