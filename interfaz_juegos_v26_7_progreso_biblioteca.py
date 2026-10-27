@@ -433,6 +433,9 @@ class App(tk.Tk):
         self.remote_pending = set()
         self.remote_lock = threading.Lock()
         self.asset_events = queue.Queue()
+        self.sync_batches = {}
+        self.sync_batch_serial = 0
+        self.sync_hide_job = None
         self.cover_cards = {}
         self.after(120, self.process_asset_events)
         self.games = []
@@ -757,6 +760,15 @@ class App(tk.Tk):
         self.status = tk.Label(status_bar, text='Preparando biblioteca...', bg=BG, fg=MUTED,
                                anchor='w', font=('Segoe UI', 10))
         self.status.pack(side='left', fill='x', expand=True)
+        # Indicador independiente: no interfiere con los mensajes de la barra de estado.
+        self.sync_box = tk.Frame(self, bg=BG)
+        self.sync_text = tk.Label(self.sync_box, bg=BG, fg=ACCENT,
+                                  font=('Segoe UI', 9), anchor='w')
+        self.sync_text.pack(fill='x')
+        self.sync_progress = ttk.Progressbar(self.sync_box, orient='horizontal',
+                                             mode='determinate', maximum=100)
+        self.sync_progress.pack(fill='x', pady=(3, 0))
+        # Se muestra únicamente cuando hay archivos pendientes.
         tk.Label(status_bar, text='MaelstromxXx & ChatGPT', bg=BG, fg='#728296',
                  anchor='e', font=('Segoe UI', 8)).pack(side='right', padx=(12, 0))
         self.load_catalog()
@@ -917,16 +929,22 @@ class App(tk.Tk):
             self.remote_pending.update(new)
         if new:
             logging.info('Archivos nuevos o modificados: %s', ', '.join(new))
-            self.download_remote_batch(new, manifest, base_url)
+            with self.remote_lock:
+                self.sync_batch_serial += 1
+                batch_id = self.sync_batch_serial
+            self.asset_events.put(('sync_start', batch_id, len(new)))
+            self.download_remote_batch(new, manifest, base_url, batch_id)
 
-    def download_remote_batch(self, paths, manifest=None, base_url=None):
+    def download_remote_batch(self, paths, manifest=None, base_url=None, batch_id=None):
         manifest = manifest if manifest is not None else dict(self.remote_manifest)
         base_url = base_url if base_url is not None else self.remote_base_url
         try:
             for relative in paths:
+                success = False
                 try:
                     digest, size = manifest[relative]
                     downloaded = download_library_asset(base_url, relative, digest, size)
+                    success = bool(downloaded)
                     if downloaded:
                         logging.info('Actualizado/descargado: %s', relative)
                         # Avisar a la interfaz por cada archivo, no al terminar todo el lote.
@@ -934,18 +952,71 @@ class App(tk.Tk):
                         self.asset_events.put(relative)
                 except Exception:
                     logging.exception('No se pudo actualizar %s; se conserva el archivo local', relative)
+                finally:
+                    if batch_id is not None:
+                        self.asset_events.put(('sync_step', batch_id, success))
         finally:
             with self.remote_lock:
                 self.remote_pending.difference_update(paths)
+            if batch_id is not None:
+                self.asset_events.put(('sync_end', batch_id))
+
+    def _hide_sync_indicator(self):
+        self.sync_hide_job = None
+        if not self.sync_batches:
+            self.sync_box.pack_forget()
+
+    def _update_sync_indicator(self):
+        if self.sync_hide_job is not None:
+            self.after_cancel(self.sync_hide_job)
+            self.sync_hide_job = None
+        if not self.sync_box.winfo_manager():
+            # Debajo de la barra de estado; sin alterar el diseño de las tarjetas.
+            self.sync_box.pack(fill='x', padx=22, pady=(0, 8))
+        if self.sync_batches:
+            total = sum(b['total'] for b in self.sync_batches.values())
+            done = sum(b['done'] for b in self.sync_batches.values())
+            errors = sum(b['errors'] for b in self.sync_batches.values())
+            pct = 100 * done / max(total, 1)
+            self.sync_text.config(text=f'🔄 Actualizando biblioteca: {done} de {total} archivos ({pct:.1f} %)' +
+                                       (f' · {errors} errores' if errors else ''))
+            self.sync_progress['value'] = pct
+        else:
+            self.sync_progress['value'] = 100
+            self.sync_text.config(text='✓ Biblioteca actualizada' if not getattr(self, '_sync_last_errors', 0)
+                                  else f'⚠ Sincronización terminada: {self._sync_last_errors} archivos con errores')
+            self.sync_hide_job = self.after(5000, self._hide_sync_indicator)
 
     def process_asset_events(self):
-        """Agrupa eventos de descarga sin bloquear ni reconstruir todo el catálogo."""
+        """Procesa descargas y avance en el hilo Tk, sin bloquear la interfaz."""
         changed = set()
+        progress_changed = False
         try:
             while True:
-                changed.add(self.asset_events.get_nowait())
+                event = self.asset_events.get_nowait()
+                if isinstance(event, tuple):
+                    kind, batch_id, value = event
+                    if kind == 'sync_start':
+                        self.sync_batches[batch_id] = {'total': value, 'done': 0, 'errors': 0}
+                        progress_changed = True
+                    elif kind == 'sync_step':
+                        batch = self.sync_batches.get(batch_id)
+                        if batch is not None:
+                            batch['done'] += 1
+                            if not value:
+                                batch['errors'] += 1
+                            progress_changed = True
+                    elif kind == 'sync_end':
+                        batch = self.sync_batches.pop(batch_id, None)
+                        if batch is not None:
+                            self._sync_last_errors = batch['errors']
+                        progress_changed = True
+                else:
+                    changed.add(event)
         except queue.Empty:
             pass
+        if progress_changed:
+            self._update_sync_indicator()
         if changed:
             try:
                 self.refresh_remote_assets(changed)
