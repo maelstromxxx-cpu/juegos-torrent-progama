@@ -763,10 +763,34 @@ def _genres(raw):
     return [part.strip() for part in re.split(r'[,;/|]+', raw) if part.strip()]
 
 
+class BarraProgresoVerde(tk.Canvas):
+    """Indicador de progreso verde, independiente del tema de Windows."""
+    def __init__(self, master):
+        super().__init__(master, height=16, bg='#273342',
+                         bd=0, highlightthickness=0)
+        self.porcentaje = 0.0
+        self.bind('<Configure>', lambda event: self._dibujar())
+
+    def __setitem__(self, key, value):
+        if key == 'value':
+            self.porcentaje = max(0.0, min(100.0, float(value)))
+            self._dibujar()
+        else:
+            super().__setitem__(key, value)
+
+    def _dibujar(self):
+        self.delete('progreso')
+        ancho = self.winfo_width()
+        alto = self.winfo_height()
+        if ancho > 1 and alto > 1 and self.porcentaje > 0:
+            self.create_rectangle(0, 0, ancho * self.porcentaje / 100, alto,
+                                  fill='#62e69a', outline='', tags='progreso')
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.5')
+        self.title('Juegos Torrent 2.7.13')
         self.geometry('1280x800')
         try:
             self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
@@ -856,18 +880,30 @@ class App(tk.Tk):
         right = tk.Frame(body, bg=PANEL, width=680)
         body.add(left, stretch='always', minsize=360)
         body.add(right, minsize=490)
-        # Cinco tarjetas (~190 px cada una) cuando la pantalla lo permite.
-        # Si falta ancho, se prioriza el mínimo del panel derecho y el grid se adapta.
+        # El catálogo debe mostrar cinco columnas en resoluciones amplias.
+        # El divisor inicial se coloca DESPUÉS de construir la interfaz, cuando
+        # Tk ya conoce las medidas reales de ambos paneles.
         def set_initial_split():
+            body.update_idletasks()
             width = body.winfo_width()
-            if width > 1100:
-                left_width = min(980, width - 500)
-                body.sash_place(0, max(370, left_width), 1)
-        self.after(180, set_initial_split)
+            # Las tarjetas de 140 px ocupan ~172 px con rellenos; además
+            # hacen falta los márgenes internos y la barra de desplazamiento.
+            desired_left = 950
+            min_right = 490
+            if width > desired_left + min_right + 6:
+                body.sash_place(0, desired_left, 1)
+            elif width > 360 + min_right + 6:
+                body.sash_place(0, width - min_right - 6, 1)
+        self.after(350, set_initial_split)
 
         # Selectores compactos personalizados: bordes suaves y menú oscuro.
-        filters = tk.Frame(left, bg=BG)
-        filters.pack(fill='x', padx=(9, 26), pady=(0, 9))
+        filters = tk.Frame(left, bg=BG, height=34)
+        # La cabecera no ocupa todo el ancho del panel: termina exactamente
+        # donde termina la última tarjeta de la primera fila.
+        filters.pack(anchor='w', padx=(9, 0), pady=(0, 9))
+        filters.pack_propagate(False)
+        self.filters = filters
+        filters.configure(width=860)
         self.genre_display = tk.StringVar(value='Todos los géneros')
         self.sort_display = tk.StringVar(value='Recientes')
         sort_options = ['Nombre (A-Z)', 'Nombre (Z-A)', 'Año (más recientes)',
@@ -1108,8 +1144,8 @@ class App(tk.Tk):
         self.sync_text = tk.Label(self.sync_box, bg=BG, fg=ACCENT,
                                   font=('Segoe UI', 9), anchor='w')
         self.sync_text.pack(fill='x')
-        self.sync_progress = ttk.Progressbar(self.sync_box, orient='horizontal',
-                                             mode='determinate', maximum=100)
+        # Canvas propio: el verde se ve igual en Windows con cualquier tema.
+        self.sync_progress = BarraProgresoVerde(self.sync_box)
         self.sync_progress.pack(fill='x', pady=(3, 0))
         # Se muestra únicamente cuando hay archivos pendientes.
         tk.Label(status_bar, text='MaelstromxXx & ChatGPT', bg=BG, fg='#728296',
@@ -1200,7 +1236,9 @@ class App(tk.Tk):
 
     def on_resize(self, event):
         self.canvas.itemconfigure(self.canvas_window, width=event.width)
-        columns = max(1, event.width // 180)
+        # Hasta cinco columnas, según el ancho REAL del catálogo.
+        # Cada tarjeta ocupa ~172 px; reservamos 16 px para holgura.
+        columns = min(5, max(1, (event.width - 16) // 172))
         if columns != self.last_columns:
             self.last_columns = columns
             self.render_games()
@@ -1831,6 +1869,23 @@ class App(tk.Tk):
             tk.Label(self.grid_frame, text='No se encontraron juegos.', fg=MUTED, bg=BG,
                      font=('Segoe UI', 12)).grid(padx=20, pady=30)
         self.status.config(text=f'Mostrando {len(filtered)} de {len(self.games)} juegos · {sum(len(g["extras"]) for g in self.games)} complementos agrupados')
+        # Tk calcula las posiciones de las tarjetas después de dibujarlas.
+        self.after_idle(self.alinear_filtros_con_caratulas)
+
+    def alinear_filtros_con_caratulas(self):
+        """Alinea el selector derecho con el borde real de la última tarjeta."""
+        if not self.filters.winfo_exists():
+            return
+        tarjetas = [w for w in self.grid_frame.winfo_children()
+                    if isinstance(w, tk.Frame) and w.grid_info().get('row') == 0]
+        if not tarjetas:
+            return
+        ultima = max(tarjetas, key=lambda w: w.winfo_x() + w.winfo_width())
+        # El contenedor de filtros comienza 9 px después del borde izquierdo
+        # del catálogo, igual que antes; por eso restamos esos 9 px.
+        ancho = max(325, ultima.winfo_x() + ultima.winfo_width() - 9)
+        if self.filters.winfo_width() != ancho:
+            self.filters.configure(width=ancho)
 
     def select_game(self, game):
         # Primera selección: retiramos la bienvenida y dejamos la ficha intacta.
@@ -2037,5 +2092,41 @@ class App(tk.Tk):
         messagebox.showerror('JUEGOS - Error de descarga', msg)
 
 
+def ejecutar_instancia_unica():
+    """Evita que un doble clic accidental lance dos sincronizadores en Windows."""
+    if os.name != 'nt':
+        App().mainloop()
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    mutex = kernel32.CreateMutexW(None, False, r'Local\KalakasSoft_JuegosTorrent')
+    if not mutex:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    ya_abierto = ctypes.get_last_error() == 183  # ERROR_ALREADY_EXISTS
+    try:
+        if ya_abierto:
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                'Juegos Torrent ya está abierto.\\n\\n'
+                'Usá la ventana que está en ejecución para evitar '
+                'dos sincronizaciones simultáneas.',
+                'Juegos Torrent',
+                0x40
+            )
+            return
+        App().mainloop()
+    finally:
+        kernel32.CloseHandle(mutex)
+
+
 if __name__ == '__main__':
-    App().mainloop()
+    ejecutar_instancia_unica()
