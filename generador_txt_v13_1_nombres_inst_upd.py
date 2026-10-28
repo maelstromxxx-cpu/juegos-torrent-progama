@@ -22,7 +22,7 @@ FORMATOS = ('.jpg', '.jpeg', '.png', '.webp')
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Generador de TXT, portadas, capturas y torrents - v12')
+        self.title('Generador de TXT, portadas, capturas y torrents - v13.1')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -155,70 +155,247 @@ class Generador(tk.Tk):
         return identificador
 
     def abrir_generador_ids(self):
-        # Una ventana por vez; no bloquea el uso del resto de Windows.
         if getattr(self, 'ventana_ids', None) and self.ventana_ids.winfo_exists():
             self.ventana_ids.lift()
-            self.ventana_ids.focus_force()
             return
         ventana = tk.Toplevel(self)
         self.ventana_ids = ventana
-        ventana.title('Generador de ID - Google Drive')
-        ventana.geometry('770x315')
-        ventana.minsize(580, 290)
+        ventana.title('Generador de ID y editor de catálogo')
+        ventana.geometry('1320x700')
+        ventana.minsize(980, 530)
         ventana.transient(self)
-        ventana.columnconfigure(0, weight=1)
-        cuerpo = ttk.Frame(ventana, padding=18)
+        cuerpo = ttk.Frame(ventana, padding=12)
         cuerpo.pack(fill='both', expand=True)
-        cuerpo.columnconfigure(0, weight=1)
+        cuerpo.columnconfigure(0, weight=2)
+        cuerpo.columnconfigure(1, weight=3)
+        cuerpo.rowconfigure(0, weight=1)
+        izquierda = ttk.LabelFrame(cuerpo, text=' GENERADOR DE REGISTROS ', padding=12)
+        derecha = ttk.LabelFrame(cuerpo, text=' EDITOR DE CATALOGO.TXT ', padding=12)
+        izquierda.grid(row=0, column=0, sticky='nsew', padx=(0, 7))
+        derecha.grid(row=0, column=1, sticky='nsew', padx=(7, 0))
+        izquierda.columnconfigure(0, weight=1)
+        derecha.columnconfigure(0, weight=1)
+        derecha.rowconfigure(2, weight=1)
+        titulo = tk.StringVar(value=getattr(self, 'ultimo_juego_guardado', '') or self.nombre_juego.get().strip())
         torrent = tk.StringVar()
         instrucciones = tk.StringVar()
+        update = tk.StringVar()
+        modo = tk.StringVar(value='completo')
         resultado = tk.StringVar()
-        ttk.Label(cuerpo, text='Enlace de Drive del TORRENT:').grid(row=0, column=0, sticky='w')
-        campo_torrent = ttk.Entry(cuerpo, textvariable=torrent)
-        campo_torrent.grid(row=1, column=0, sticky='ew', pady=(3, 12))
-        self.menu_contextual(campo_torrent)
-        ttk.Label(cuerpo, text='Enlace de Drive de las INSTRUCCIONES:').grid(row=2, column=0, sticky='w')
-        campo_instrucciones = ttk.Entry(cuerpo, textvariable=instrucciones)
-        campo_instrucciones.grid(row=3, column=0, sticky='ew', pady=(3, 12))
-        self.menu_contextual(campo_instrucciones)
-        ttk.Label(cuerpo, text='Resultado (uno o dos ID, separados por | si corresponde):').grid(row=5, column=0, sticky='w', pady=(9, 0))
-        salida = ttk.Entry(cuerpo, textvariable=resultado, state='readonly')
-        salida.grid(row=6, column=0, sticky='ew', pady=(4, 12))
+        ruta_catalogo = tk.StringVar(value=self.configuracion.get('CATALOGO', ''))
+        estado = ttk.Label(izquierda, text='', wraplength=410)
+        for fila, (etiqueta, variable) in enumerate((('Título del juego:', titulo), ('Enlace Drive del TORRENT:', torrent), ('Enlace Drive de INSTRUCCIONES:', instrucciones), ('Enlace Drive del UPDATE (opcional):', update))):
+            ttk.Label(izquierda, text=etiqueta).grid(row=fila * 2, column=0, sticky='w', pady=(7, 0))
+            entrada = ttk.Entry(izquierda, textvariable=variable)
+            entrada.grid(row=fila * 2 + 1, column=0, sticky='ew', pady=(2, 5))
+            self.menu_contextual(entrada)
+        modos = ttk.Frame(izquierda)
+        modos.grid(row=8, column=0, sticky='w', pady=(9, 5))
+        ttk.Radiobutton(modos, text='Juego completo', variable=modo, value='completo').pack(side='left', padx=(0, 14))
+        ttk.Radiobutton(modos, text='Solo update', variable=modo, value='update').pack(side='left')
+        ttk.Label(izquierda, text='Resultado generado:').grid(row=9, column=0, sticky='w', pady=(8, 2))
+        salida = tk.Text(izquierda, height=4, wrap='none', undo=False, font=('Consolas', 10))
+        salida.grid(row=10, column=0, sticky='ew')
         self.menu_contextual(salida)
+        botones = ttk.Frame(izquierda)
+        botones.grid(row=11, column=0, sticky='w', pady=(12, 6))
+        estado.grid(row=12, column=0, sticky='w', pady=(5, 0))
+        ttk.Label(izquierda, text='El catálogo se guarda únicamente al pulsar GUARDAR CATÁLOGO.', wraplength=410).grid(row=13, column=0, sticky='w', pady=(15, 0))
+
+        herramientas = ttk.Frame(derecha)
+        herramientas.grid(row=0, column=0, sticky='ew', pady=(0, 6))
+        herramientas.columnconfigure(0, weight=1)
+        ruta_label = ttk.Label(derecha, textvariable=ruta_catalogo, wraplength=650)
+        ruta_label.grid(row=1, column=0, sticky='w', pady=(0, 6))
+        marco_texto = ttk.Frame(derecha)
+        marco_texto.grid(row=2, column=0, sticky='nsew')
+        marco_texto.columnconfigure(0, weight=1)
+        marco_texto.rowconfigure(0, weight=1)
+        editor = tk.Text(marco_texto, wrap='none', undo=True, font=('Consolas', 10))
+        editor.grid(row=0, column=0, sticky='nsew')
+        scroll_y = ttk.Scrollbar(marco_texto, orient='vertical', command=editor.yview)
+        scroll_y.grid(row=0, column=1, sticky='ns')
+        scroll_x = ttk.Scrollbar(marco_texto, orient='horizontal', command=editor.xview)
+        scroll_x.grid(row=1, column=0, sticky='ew')
+        editor.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        self.menu_contextual(editor)
+        estado_catalogo = ttk.Label(derecha, text='')
+        estado_catalogo.grid(row=3, column=0, sticky='w', pady=(7, 0))
+        ruta_actual = [None]
+        cargando = [False]
+
+        def cambio_editor(event=None):
+            if editor.edit_modified():
+                if not cargando[0]:
+                    estado_catalogo.configure(text='● Cambios sin guardar')
+                editor.edit_modified(False)
+        editor.bind('<<Modified>>', cambio_editor)
+
+        def abrir_archivo(ruta):
+            ruta = Path(ruta)
+            if not ruta.is_file():
+                messagebox.showerror('Catálogo no encontrado', f'No existe el archivo:\n{ruta}', parent=ventana)
+                return
+            if ruta_actual[0] and editor.get('1.0', 'end-1c') != contenido_guardado[0]:
+                if not messagebox.askyesno('Cambios sin guardar', 'Hay cambios sin guardar. ¿Descartarlos y abrir otro archivo?', parent=ventana):
+                    return
+            try:
+                texto = ruta.read_text(encoding='utf-8-sig')
+            except (OSError, UnicodeError) as error:
+                messagebox.showerror('Error al abrir', str(error), parent=ventana)
+                return
+            cargando[0] = True
+            editor.delete('1.0', 'end')
+            editor.insert('1.0', texto)
+            editor.edit_reset()
+            editor.edit_modified(False)
+            cargando[0] = False
+            contenido_guardado[0] = texto
+            ruta_actual[0] = ruta
+            ruta_catalogo.set(str(ruta))
+            self.configuracion['CATALOGO'] = str(ruta)
+            self.guardar_configuracion()
+            estado_catalogo.configure(text=f'Abierto: {ruta.name}')
+
+        contenido_guardado = ['']
+
+        def elegir_archivo():
+            elegido = filedialog.askopenfilename(parent=ventana, title='Abrir catalogo.txt', initialdir=str(ruta_actual[0].parent) if ruta_actual[0] else str(Path.home()), filetypes=[('Archivos de texto', '*.txt'), ('Todos los archivos', '*.*')])
+            if elegido:
+                abrir_archivo(elegido)
+
+        def guardar_catalogo():
+            ruta = ruta_actual[0]
+            if ruta is None:
+                elegido = filedialog.asksaveasfilename(parent=ventana, title='Guardar catálogo', defaultextension='.txt', initialfile='catalogo.txt', filetypes=[('Archivos de texto', '*.txt')])
+                if not elegido:
+                    return False
+                ruta = Path(elegido)
+            texto = editor.get('1.0', 'end-1c')
+            try:
+                # Reemplazo atómico: evita truncar el catálogo ante fallos de escritura.
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='', dir=ruta.parent, prefix='.catalogo_', suffix='.tmp', delete=False) as temporal:
+                    temporal.write(texto)
+                    nombre_temporal = temporal.name
+                try:
+                    os.replace(nombre_temporal, ruta)
+                finally:
+                    if os.path.exists(nombre_temporal):
+                        os.unlink(nombre_temporal)
+            except OSError as error:
+                messagebox.showerror('Error al guardar catálogo', str(error), parent=ventana)
+                return False
+            ruta_actual[0] = ruta
+            ruta_catalogo.set(str(ruta))
+            self.configuracion['CATALOGO'] = str(ruta)
+            self.guardar_configuracion()
+            contenido_guardado[0] = texto
+            estado_catalogo.configure(text='✓ Catálogo guardado correctamente')
+            return True
+
+        ttk.Button(herramientas, text='ABRIR CATÁLOGO', command=elegir_archivo).pack(side='left', padx=(0, 8))
+        ttk.Button(herramientas, text='GUARDAR CATÁLOGO', command=guardar_catalogo).pack(side='left')
 
         def generar():
-            resultado.set('')
-            enlace_torrent = torrent.get().strip()
-            enlace_instrucciones = instrucciones.get().strip()
-            if not enlace_torrent and not enlace_instrucciones:
-                messagebox.showwarning('Faltan enlaces', 'Pegá al menos un enlace de Google Drive.', parent=ventana)
+            nombre = titulo.get().strip()
+            if not nombre or '|' in nombre or '\n' in nombre or '\r' in nombre:
+                messagebox.showwarning('Título inválido', 'Ingresá un título válido, sin barras |.', parent=ventana)
                 return
             try:
-                id_torrent = self.obtener_id_drive(enlace_torrent) if enlace_torrent else ''
-                id_instrucciones = self.obtener_id_drive(enlace_instrucciones) if enlace_instrucciones else ''
-                resultado.set(f'{id_torrent}|{id_instrucciones}' if id_torrent and id_instrucciones else (id_torrent or id_instrucciones))
+                id_torrent = self.obtener_id_drive(torrent.get()) if torrent.get().strip() else ''
+                id_instrucciones = self.obtener_id_drive(instrucciones.get()) if instrucciones.get().strip() else ''
+                id_update = self.obtener_id_drive(update.get()) if update.get().strip() else ''
             except ValueError as error:
                 messagebox.showerror('Enlace inválido', str(error), parent=ventana)
+                return
+            if modo.get() == 'update':
+                if not id_update:
+                    messagebox.showwarning('Falta update', 'Para «Solo update», pegá el enlace del update.', parent=ventana)
+                    return
+                lineas = [f'---{nombre}|txt|{id_update}']
+            else:
+                if not id_torrent and not id_instrucciones:
+                    messagebox.showwarning('Faltan enlaces', 'Pegá el enlace del torrent o de las instrucciones.', parent=ventana)
+                    return
+                principal = f'{nombre}|{id_torrent}'
+                if id_instrucciones:
+                    principal += f'|{id_instrucciones}'
+                lineas = [principal]
+                if id_update:
+                    lineas.append(f'---{nombre}|txt|{id_update}')
+            texto = '\n'.join(lineas)
+            salida.delete('1.0', 'end')
+            salida.insert('1.0', texto)
+            if modo.get() == 'update':
+                lineas_editor = editor.get('1.0', 'end-1c').splitlines(keepends=True)
+                coincidencias = [i for i, linea in enumerate(lineas_editor) if not linea.startswith('---') and linea.split('|', 1)[0].strip().casefold() == nombre.casefold()]
+                if len(coincidencias) > 1:
+                    seleccion = tk.Toplevel(ventana)
+                    seleccion.title('Elegir versión del juego')
+                    seleccion.geometry('780x340')
+                    seleccion.transient(ventana)
+                    ttk.Label(seleccion, text='Hay varias entradas con ese título. Elegí debajo de cuál insertar el update:', padding=10).pack(anchor='w')
+                    lista = tk.Listbox(seleccion, exportselection=False, font=('Consolas', 10))
+                    lista.pack(fill='both', expand=True, padx=10)
+                    for i in coincidencias:
+                        lista.insert('end', f'Línea {i + 1}: {lineas_editor[i].strip()}')
+                    lista.selection_set(0)
+                    def elegir():
+                        sel = lista.curselection()
+                        if sel:
+                            insertar_update(coincidencias[sel[0]])
+                            seleccion.destroy()
+                    ttk.Button(seleccion, text='INSERTAR EN LA SELECCIONADA', command=elegir).pack(pady=10)
+                    return
+                if len(coincidencias) == 1:
+                    insertar_update(coincidencias[0])
+                else:
+                    estado.configure(text='Juego no encontrado. Resultado generado; podés copiarlo y pegarlo manualmente.')
+            else:
+                editor.insert('1.0', texto + '\n')
+                editor.see('1.0')
+                estado.configure(text='Registro insertado al comienzo del editor. Falta guardar el catálogo.')
+
+        def insertar_update(indice):
+            lineas = editor.get('1.0', 'end-1c').splitlines(keepends=True)
+            posicion = indice + 1
+            while posicion < len(lineas) and lineas[posicion].startswith('---'):
+                posicion += 1
+            if posicion == len(lineas) and lineas and not lineas[-1].endswith('\n'):
+                editor.insert('end-1c', '\n')
+            editor.insert(f'{posicion + 1}.0', salida.get('1.0', 'end-1c') + '\n')
+            editor.see(f'{posicion + 1}.0')
+            estado.configure(text='Update insertado debajo del juego elegido. Falta guardar el catálogo.')
 
         def copiar():
-            if not resultado.get():
-                messagebox.showwarning('Sin resultado', 'Primero generá al menos un ID.', parent=ventana)
+            texto = salida.get('1.0', 'end-1c')
+            if not texto:
+                messagebox.showwarning('Sin resultado', 'Primero generá un registro.', parent=ventana)
                 return
             self.clipboard_clear()
-            self.clipboard_append(resultado.get())
-            self.update_idletasks()
-            estado.configure(text='¡Resultado copiado al portapapeles!')
+            self.clipboard_append(texto)
+            estado.configure(text='Resultado copiado al portapapeles.')
 
-        ttk.Button(cuerpo, text='GENERAR ID', command=generar).grid(row=4, column=0, pady=(0, 1))
-        acciones_ids = ttk.Frame(cuerpo)
-        acciones_ids.grid(row=7, column=0)
-        ttk.Button(acciones_ids, text='COPIAR RESULTADO', command=copiar).pack(side='left', padx=8)
-        ttk.Button(acciones_ids, text='CERRAR', command=ventana.destroy).pack(side='left', padx=8)
-        estado = ttk.Label(cuerpo, text='')
-        estado.grid(row=8, column=0, pady=(6, 0))
-        campo_torrent.bind('<Return>', lambda e: campo_instrucciones.focus_set())
-        campo_instrucciones.bind('<Return>', lambda e: generar())
-        campo_torrent.focus_set()
+        ttk.Button(botones, text='GENERAR E INSERTAR', command=generar).pack(side='left', padx=(0, 8))
+        ttk.Button(botones, text='COPIAR RESULTADO', command=copiar).pack(side='left')
+
+        def cerrar_ventana():
+            if editor.get('1.0', 'end-1c') != contenido_guardado[0]:
+                respuesta = messagebox.askyesnocancel('Cambios sin guardar', '¿Querés guardar los cambios del catálogo antes de cerrar?', parent=ventana)
+                if respuesta is None:
+                    return
+                if respuesta and not guardar_catalogo():
+                    return
+            ventana.destroy()
+        ventana.protocol('WM_DELETE_WINDOW', cerrar_ventana)
+        if ruta_catalogo.get():
+            ruta = Path(ruta_catalogo.get())
+            if ruta.is_file():
+                abrir_archivo(ruta)
+            else:
+                estado_catalogo.configure(text='No se encontró el catálogo anterior. Elegí ABRIR CATÁLOGO.')
+        else:
+            estado_catalogo.configure(text='Seleccioná catalogo.txt la primera vez; luego se abrirá automáticamente.')
         ventana.lift()
 
     def menu_contextual(self, widget):
@@ -317,6 +494,7 @@ class Generador(tk.Tk):
         datos['CAPTURAS'] = self.ruta_capturas.get().strip()
         datos['PORTADAS'] = self.ruta_portadas.get().strip()
         datos['TORRENTS'] = self.ruta_torrents.get().strip()
+        datos['CATALOGO'] = self.configuracion.get('CATALOGO', '')
         try:
             CONFIG.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding='utf-8')
         except OSError:
@@ -385,7 +563,10 @@ class Generador(tk.Tk):
                 if carpeta is None or not carpeta.is_dir():
                     messagebox.showerror('Carpeta inválida', f'Seleccioná una carpeta existente para {seccion}.')
                     return
-                trabajos.append((carpeta / (nombre + '.txt'), contenido, None))
+                # Instrucciones y updates pueden compartir la misma carpeta de Drive.
+                sufijos = {'INSTRUCCIONES': '_inst', 'UPDATES': '_upd'}
+                archivo_txt = nombre + sufijos.get(seccion, '') + '.txt'
+                trabajos.append((carpeta / archivo_txt, contenido, None))
         if self.portada:
             destino = Path(self.ruta_portadas.get().strip()) if self.ruta_portadas.get().strip() else None
             if destino is None or not destino.is_dir():
@@ -447,6 +628,7 @@ class Generador(tk.Tk):
         mensaje = f'¡Listo!\n\nTXT: {txt}\nPortada: {1 if self.portada else 0}\nCapturas: {len(self.imagenes_capturas)}\nTorrent copiado: {1 if self.archivo_torrent else 0}'
         if carpeta_capturas:
             mensaje += f'\n\nCarpeta de capturas: {carpeta_capturas}'
+        self.ultimo_juego_guardado = nombre
         self.limpiar_formulario()
         messagebox.showinfo('Guardado completo', mensaje)
         self.abrir_generador_ids()
