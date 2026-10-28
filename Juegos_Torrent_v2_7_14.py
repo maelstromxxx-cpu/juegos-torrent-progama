@@ -1236,6 +1236,7 @@ class App(tk.Tk):
 
     def on_resize(self, event):
         self.canvas.itemconfigure(self.canvas_window, width=event.width)
+        self.after_idle(self.alinear_filtros_con_caratulas)
         # Hasta cinco columnas, según el ancho REAL del catálogo.
         # Cada tarjeta ocupa ~172 px; reservamos 16 px para holgura.
         columns = min(5, max(1, (event.width - 16) // 172))
@@ -1876,13 +1877,17 @@ class App(tk.Tk):
         """Alinea el selector derecho con el borde real de la última tarjeta."""
         if not self.filters.winfo_exists():
             return
+        # Medimos las columnas reales, pero no usamos las posiciones de
+        # tarjetas durante un repintado parcial (pueden ser transitorias).
+        columnas = max(1, self.last_columns or 1)
         tarjetas = [w for w in self.grid_frame.winfo_children()
                     if isinstance(w, tk.Frame) and w.grid_info().get('row') == 0]
-        if not tarjetas:
+        if len(tarjetas) < columnas:
             return
-        ultima = max(tarjetas, key=lambda w: w.winfo_x() + w.winfo_width())
-        # El contenedor de filtros comienza 9 px después del borde izquierdo
-        # del catálogo, igual que antes; por eso restamos esos 9 px.
+        self.grid_frame.update_idletasks()
+        ultima = max(tarjetas, key=lambda w: int(w.grid_info()['column']))
+        # El marco de filtros está desplazado 9 px respecto del lienzo.
+        # Su ancho termina exactamente en el borde de la última tarjeta.
         ancho = max(325, ultima.winfo_x() + ultima.winfo_width() - 9)
         if self.filters.winfo_width() != ancho:
             self.filters.configure(width=ancho)
