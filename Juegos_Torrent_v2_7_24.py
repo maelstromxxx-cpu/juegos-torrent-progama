@@ -790,8 +790,10 @@ class BarraProgresoVerde(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.17')
-        self.after(100, self.apply_windows_dark_titlebar)
+        self.title('Juegos Torrent 2.7.24')
+        self._startup_split_job = None
+        self._startup_split_done = False
+        self.bind('<Map>', self._on_window_mapped, add='+')
         self.geometry('1280x800')
         try:
             self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
@@ -808,6 +810,10 @@ class App(tk.Tk):
         self.sync_batch_serial = 0
         self.sync_hide_job = None
         self.cover_cards = {}
+        self.card_widgets = {}  # Tarjetas reutilizables: no destruir al cambiar columnas.
+        self.cover_photo_cache = {}  # Miniaturas compuestas reutilizadas por archivo/estado.
+        self.resize_layout_job = None
+        self.visible_game_names = []
         self.owned_games = self.load_owned_games()
         self.after(120, self.process_asset_events)
         self.games = []
@@ -885,21 +891,10 @@ class App(tk.Tk):
         right = tk.Frame(body, bg=PANEL, width=680)
         body.add(left, stretch='always', minsize=360)
         body.add(right, minsize=490)
-        # El catálogo debe mostrar cinco columnas en resoluciones amplias.
-        # El divisor inicial se coloca DESPUÉS de construir la interfaz, cuando
-        # Tk ya conoce las medidas reales de ambos paneles.
-        def set_initial_split():
-            body.update_idletasks()
-            width = body.winfo_width()
-            # Las tarjetas de 140 px ocupan ~172 px con rellenos; además
-            # hacen falta los márgenes internos y la barra de desplazamiento.
-            desired_left = 950
-            min_right = 490
-            if width > desired_left + min_right + 6:
-                body.sash_place(0, desired_left, 1)
-            elif width > 360 + min_right + 6:
-                body.sash_place(0, width - min_right - 6, 1)
-        self.after(350, set_initial_split)
+        # Conservar el panel de ficha en un ancho estable durante el arranque.
+        # La geometría real se conoce al mapear la ventana, no tras 350 ms fijos.
+        self.main_paned = body
+        self.after_idle(self._schedule_startup_split)
 
         # Selectores compactos personalizados: bordes suaves y menú oscuro.
         filters = tk.Frame(left, bg=BG, height=34)
@@ -1029,19 +1024,14 @@ class App(tk.Tk):
             label.pack(side='left')
             self.info_values[key] = (slot, label)
 
-        # El estado personal queda integrado a la barra de información,
-        # no debajo de la portada ni dentro de las descargas.
-        # Botón destacado: naranja al agregar, verde cuando ya está descargado.
-        # El icono es texto Unicode, así que no requiere archivos adicionales.
-        self.owned_button = tk.Button(self.info_bar, text='＋  Marcar descargado',
-                                      command=self.toggle_owned_selected,
-                                      bg='#f5a623', fg='#17202a',
-                                      activebackground='#ffc15b', activeforeground='#17202a',
-                                      relief='flat', bd=0, padx=13, pady=8,
-                                      cursor='hand2', font=('Segoe UI', 10, 'bold'))
+        # Botón de colección dibujado en Canvas para tener esquinas redondeadas.
+        self.owned_button = tk.Canvas(self.info_bar, width=156, height=38,
+                                      bg=CARD, bd=0, highlightthickness=0,
+                                      cursor='hand2')
         self.owned_button.pack(side='right', padx=(8, 0))
         self.owned_button.bind('<Enter>', lambda _: self._hover_owned_button(True))
         self.owned_button.bind('<Leave>', lambda _: self._hover_owned_button(False))
+        self.owned_button.bind('<Button-1>', lambda _: self.toggle_owned_selected())
 
         # Sinopsis justo debajo de las capturas, dentro de la columna derecha.
         # La barra de información permanece debajo de toda la fila multimedia.
@@ -1163,35 +1153,57 @@ class App(tk.Tk):
         self.load_catalog()
         self.load_remote_manifest()
 
-    def apply_windows_dark_titlebar(self):
-        """Solicita barra de título oscura al DWM de Windows 10/11.
-
-        No altera los colores de la interfaz Tkinter. Si el sistema no
-        admite este atributo, conserva la barra de título original.
-        """
-        if os.name != 'nt':
+    def _on_window_mapped(self, event):
+        """El HWND de Windows ya existe al recibir Map."""
+        if event.widget is not self:
             return
+        self._schedule_startup_split()
+
+    def _schedule_startup_split(self):
+        if self._startup_split_done or not hasattr(self, 'main_paned'):
+            return
+        if self._startup_split_job is not None:
+            self.after_cancel(self._startup_split_job)
+        self._startup_split_job = self.after(160, self._set_startup_split)
+
+    def _set_startup_split(self):
+        """Fijar el divisor cuando la ventana ya tiene dimensiones utilizables."""
+        self._startup_split_job = None
+        if self._startup_split_done:
+            return
+        body = self.main_paned
+        width = body.winfo_width()
+        if width < 860 or not body.winfo_ismapped():
+            self._schedule_startup_split()
+            return
+        # Preferir cinco columnas a la izquierda si entra; respetar la ficha.
+        min_left, min_right, sash = 360, 490, 6
+        left_width = min(950, width - min_right - sash)
+        left_width = max(min_left, left_width)
         try:
-            import ctypes
-            from ctypes import wintypes
-            self.update_idletasks()
-            user32 = ctypes.WinDLL('user32')
-            user32.GetParent.argtypes = (wintypes.HWND,)
-            user32.GetParent.restype = wintypes.HWND
-            client_hwnd = wintypes.HWND(self.winfo_id())
-            hwnd = user32.GetParent(client_hwnd) or client_hwnd
-            enabled = ctypes.c_int(1)
-            dwm = ctypes.WinDLL('dwmapi')
-            dwm.DwmSetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD,
-                                                  ctypes.c_void_p, wintypes.DWORD)
-            dwm.DwmSetWindowAttribute.restype = ctypes.c_long
-            for attribute in (20, 19):
-                result = dwm.DwmSetWindowAttribute(hwnd, attribute,
-                                                   ctypes.byref(enabled), ctypes.sizeof(enabled))
-                if result == 0:
-                    break
-        except (OSError, AttributeError, ValueError):
-            logging.exception('No se pudo activar la barra de título oscura')
+            body.sash_place(0, left_width, 1)
+            # Segunda pasada: algunos widgets todavía solicitan tamaño en
+            # el primer ciclo de geometría y pueden desplazar el divisor.
+            self.after(220, self._verify_startup_split)
+        except tk.TclError:
+            self._schedule_startup_split()
+
+    def _verify_startup_split(self):
+        if self._startup_split_done:
+            return
+        body = self.main_paned
+        width = body.winfo_width()
+        if width < 860 or not body.winfo_ismapped():
+            self._schedule_startup_split()
+            return
+        target = max(360, min(950, width - 490 - 6))
+        try:
+            current = body.sash_coord(0)[0]
+            if abs(current - target) > 12:
+                body.sash_place(0, target, 1)
+        except tk.TclError:
+            pass
+        self._startup_split_done = True
 
     def redraw_ficha_header(self, event=None):
         """Ajusta el PNG a todo el ancho de la ficha, también al mover el divisor."""
@@ -1275,14 +1287,56 @@ class App(tk.Tk):
             widget = getattr(widget, 'master', None)
 
     def on_resize(self, event):
+        # Cambiar el ancho del canvas es barato; no reconstruir las tarjetas.
         self.canvas.itemconfigure(self.canvas_window, width=event.width)
-        self.after_idle(self.alinear_filtros_con_caratulas)
-        # Hasta cinco columnas, según el ancho REAL del catálogo.
-        # Cada tarjeta ocupa ~172 px; reservamos 16 px para holgura.
         columns = min(5, max(1, (event.width - 16) // 172))
         if columns != self.last_columns:
             self.last_columns = columns
-            self.render_games()
+            if self.resize_layout_job is not None:
+                self.after_cancel(self.resize_layout_job)
+            # Agrupar eventos de arrastre/maximizar/restaurar.
+            self.resize_layout_job = self.after(90, self.relayout_cards)
+        else:
+            self.after_idle(self.alinear_filtros_con_caratulas)
+
+    def relayout_cards(self):
+        """Reubica las tarjetas existentes sin reabrir carátulas ni crear widgets."""
+        self.resize_layout_job = None
+        cols = max(1, self.last_columns or 3)
+        for i, name in enumerate(self.visible_game_names):
+            card = self.card_widgets.get(name)
+            if card is not None:
+                card.grid_configure(row=i // cols, column=i % cols)
+        self.after_idle(self.alinear_filtros_con_caratulas)
+
+    def cached_card_photo(self, name):
+        """Caché por ruta, fecha de modificación, puntuación y marca personal."""
+        path = find_cover(name)
+        if path is None:
+            return None
+        try:
+            stamp = (path.stat().st_mtime_ns, path.stat().st_size)
+        except OSError:
+            return None
+        score = game_score(self.game_metadata.get(name, {}))
+        key = (str(path), stamp, score, name in self.owned_games)
+        photo = self.cover_photo_cache.get(key)
+        if photo is None:
+            photo = load_scored_cover(path, score, 140, 185, master=self,
+                                      owned=name in self.owned_games)
+            if photo is not None:
+                self.cover_photo_cache[key] = photo
+        return photo
+
+    def update_card_cover(self, name):
+        label = self.cover_cards.get(name)
+        if label is None:
+            return
+        photo = self.cached_card_photo(name)
+        label.config(image=photo if photo is not None else '',
+                     text='' if photo else ('✓ DESCARGADO\nSIN CARÁTULA' if name in self.owned_games else 'SIN\nCARÁTULA'),
+                     width=0 if photo else 17, height=0 if photo else 10)
+        label.image = photo
 
     def load_remote_manifest(self):
         manifest_url = read_remote_config()
@@ -1454,16 +1508,13 @@ class App(tk.Tk):
             changed = set()
         cover_paths = [p for p in changed if p.startswith('imagenes/')]
         if cover_paths:
-            for game_name, label in list(self.cover_cards.items()):
+            for game_name in list(self.cover_cards):
                 if any(Path(p).stem in image_stems(game_name) for p in cover_paths):
-                    score = game_score(self.game_metadata.get(game_name, {}))
-                    photo = load_scored_cover(find_cover(game_name), score, 140, 185, master=self,
-                                              owned=game_name in self.owned_games)
-                    label.config(image=photo if photo is not None else '',
-                                 text='' if photo else 'SIN\nCARÁTULA',
-                                 width=0 if photo else 17,
-                                 height=0 if photo else 10)
-                    label.image = photo
+                    # Evita usar una miniatura antigua incluso si el sistema conserva timestamps.
+                    stems = set(image_stems(game_name))
+                    self.cover_photo_cache = {k: v for k, v in self.cover_photo_cache.items()
+                                              if Path(k[0]).stem not in stems}
+                    self.update_card_cover(game_name)
         if any(p.startswith('datos/') and p.lower().endswith('.txt') for p in changed):
             self.render_games()
         if self.selected:
@@ -1539,6 +1590,13 @@ class App(tk.Tk):
         self.catalog_loading = False
         self.catalog_error = False
         self.games = group_catalog(games)
+        # El catálogo remoto puede cambiar: recrear tarjetas solo al actualizarlo.
+        for card in self.card_widgets.values():
+            card.destroy()
+        self.card_widgets.clear()
+        self.cover_photo_cache.clear()
+        self.cover_cards.clear()
+        self.visible_game_names = []
         self.selected = None
         self.download_button.config(state='disabled')
         self.guide_button.place_forget()
@@ -1865,40 +1923,43 @@ class App(tk.Tk):
             self.set_owned(name, name not in self.owned_games)
 
     def _hover_owned_button(self, hovering):
-        """Resalta el botón sin alterar su estado ni su acción."""
         self._owned_button_hover = hovering
-        if self.owned_button['state'] == 'disabled':
-            return
-        owned = bool(self.selected and self.selected['name'] in self.owned_games)
-        normal = '#22c77a' if owned else '#f5a623'
-        hover = '#54e69b' if owned else '#ffc15b'
-        self.owned_button.config(bg=hover if hovering else normal)
+        self.update_owned_button()
 
     def update_owned_button(self):
-        if not self.selected:
-            self.owned_button.config(state='disabled', text='＋  Marcar descargado',
-                                     bg='#5a6269', fg='#e0e4e7', cursor='arrow')
-            return
-        owned = self.selected['name'] in self.owned_games
-        normal = '#22c77a' if owned else '#f5a623'
-        hover = '#54e69b' if owned else '#ffc15b'
-        self.owned_button.config(state='normal',
-                                 text='✓  Marcar no descargado' if owned else '＋  Marcar descargado',
-                                 bg=hover if getattr(self, '_owned_button_hover', False) else normal,
-                                 fg='#17202a', activebackground=hover,
-                                 activeforeground='#17202a', cursor='hand2')
+        """Muestra la ACCIÓN disponible, no el estado actual del juego."""
+        canvas = self.owned_button
+        canvas.delete('all')
+        selected = bool(self.selected)
+        owned = selected and self.selected['name'] in self.owned_games
+        hovering = getattr(self, '_owned_button_hover', False) and selected
+
+        if not selected:
+            label, bg, border, fg = 'Lo tengo', '#303a47', '#536173', '#8e9aaa'
+        elif owned:
+            # Ya está en la colección: el botón permite quitarlo.
+            label = '✕  No lo tengo'
+            bg = '#823D42' if not hovering else '#A34B50'
+            border, fg = '#D66B70', '#FFE5E5'
+        else:
+            # Todavía no está: el botón permite agregarlo.
+            label = '✓  Lo tengo'
+            bg = '#24523f' if not hovering else '#306b50'
+            border, fg = '#55bd86', '#d3ffe4'
+
+        w, h, r = 156, 38, 10
+        canvas.configure(cursor='hand2' if selected else 'arrow')
+        # Polígono suavizado: esquinas redondeadas sin relieve de Windows.
+        coords = [r, 1, w-r, 1, w-1, 1, w-1, r,
+                  w-1, h-r, w-1, h-1, w-r, h-1,
+                  r, h-1, 1, h-1, 1, h-r, 1, r, 1, 1]
+        canvas.create_polygon(coords, smooth=True, splinesteps=16,
+                              fill=bg, outline=border, width=1.5)
+        canvas.create_text(w//2, h//2, text=label, fill=fg,
+                           font=('Segoe UI', 10, 'bold'))
 
     def refresh_owned_card(self, name):
-        cover = self.cover_cards.get(name)
-        if cover is None:
-            return
-        score = game_score(self.game_metadata.get(name, {}))
-        photo = load_scored_cover(find_cover(name), score, 140, 185,
-                                  master=self, owned=name in self.owned_games)
-        cover.config(image=photo if photo else '',
-                     text='' if photo else ('✓ DESCARGADO\nSIN CARÁTULA' if name in self.owned_games else 'SIN\nCARÁTULA'),
-                     width=0 if photo else 17, height=0 if photo else 10)
-        cover.image = photo
+        self.update_card_cover(name)
 
     def schedule_search_render(self):
         """Espera 300 ms desde la última tecla antes de filtrar el catálogo."""
@@ -1913,10 +1974,6 @@ class App(tk.Tk):
     def render_games(self):
         if not hasattr(self, 'grid_frame'):
             return
-        for widget in self.grid_frame.winfo_children():
-            widget.destroy()
-        self.images = []
-        self.cover_cards = {}
         self.refresh_classification()
         text = self.search.get().strip().casefold()
         genre = self.genre_filter.get().casefold()
@@ -1927,38 +1984,53 @@ class App(tk.Tk):
         if self.sort_mode.get() == 'En Colección':
             filtered = [g for g in filtered if g['name'] in self.owned_games]
         filtered = self.sort_games(filtered)
+        visible = [g['name'] for g in filtered]
+        wanted = set(visible)
+        # Las tarjetas filtradas se ocultan, no se destruyen. Se reutilizan al buscar.
+        for name, card in self.card_widgets.items():
+            if name not in wanted:
+                card.grid_remove()
         cols = max(1, self.last_columns or 3)
         for i, game in enumerate(filtered):
-            card = tk.Frame(self.grid_frame, bg=CARD, padx=8, pady=8, cursor='hand2')
+            name = game['name']
+            card = self.card_widgets.get(name)
+            if card is None:
+                card = tk.Frame(self.grid_frame, bg=CARD, padx=8, pady=8, cursor='hand2')
+                photo = self.cached_card_photo(name)
+                if photo:
+                    cover = tk.Label(card, image=photo, bg=CARD, cursor='hand2')
+                else:
+                    cover = tk.Label(card, text='✓ DESCARGADO\nSIN CARÁTULA' if name in self.owned_games else 'SIN\nCARÁTULA',
+                                     fg=MUTED, bg=PANEL, width=17, height=10,
+                                     font=('Segoe UI', 11, 'bold'), cursor='hand2')
+                cover.image = photo
+                cover.pack()
+                self.cover_cards[name] = cover
+                title = tk.Label(card, text=split_game_title(name)[0], fg=FG, bg=CARD,
+                                 wraplength=145, width=20, height=3,
+                                 font=('Segoe UI', 9), cursor='hand2')
+                title.pack(pady=(7, 0))
+                for widget in (card, cover, title):
+                    widget.bind('<Button-1>', lambda _, g=game: self.select_game(g))
+                self.card_widgets[name] = card
             card.grid(row=i // cols, column=i % cols, padx=8, pady=8, sticky='n')
-            score = game_score(self.game_metadata.get(game['name'], {}))
-            photo = load_scored_cover(find_cover(game['name']), score, 140, 185, master=self,
-                                      owned=game['name'] in self.owned_games)
-            if photo:
-                self.images.append(photo)
-                cover = tk.Label(card, image=photo, bg=CARD, cursor='hand2')
-            else:
-                cover = tk.Label(card, text='✓ DESCARGADO\nSIN CARÁTULA' if game['name'] in self.owned_games else 'SIN\nCARÁTULA', fg=MUTED, bg=PANEL,
-                                 width=17, height=10, font=('Segoe UI', 11, 'bold'), cursor='hand2')
-            cover.pack()
-            self.cover_cards[game['name']] = cover
-            title = tk.Label(card, text=split_game_title(game['name'])[0], fg=FG, bg=CARD,
-                             wraplength=145, width=20, height=3,
-                             font=('Segoe UI', 9), cursor='hand2')
-            title.pack(pady=(7, 0))
-            for widget in (card, cover, title):
-                widget.bind('<Button-1>', lambda _, g=game: self.select_game(g))
+        self.visible_game_names = visible
+        # Un solo indicador reutilizable en lugar de crear uno por cada búsqueda.
+        if not hasattr(self, 'empty_catalog_label'):
+            self.empty_catalog_label = tk.Label(self.grid_frame, fg=MUTED, bg=BG,
+                                                font=('Segoe UI', 12))
         if not filtered:
             empty_message = ('Cargando juegos...' if self.catalog_loading and not self.games
                              else 'No se pudo cargar el catálogo.' if self.catalog_error and not self.games
                              else 'No hay juegos en tu colección.' if self.sort_mode.get() == 'En Colección'
                              and not self.search.get().strip() and self.genre_filter.get() == 'Todos los géneros'
                              else 'No se encontraron juegos.')
-            tk.Label(self.grid_frame, text=empty_message, fg=MUTED, bg=BG,
-                     font=('Segoe UI', 12)).grid(padx=20, pady=30)
+            self.empty_catalog_label.config(text=empty_message)
+            self.empty_catalog_label.grid(row=0, column=0, padx=20, pady=30)
+        else:
+            self.empty_catalog_label.grid_remove()
         if not self.catalog_loading and not self.catalog_error:
             self.status.config(text=f'Mostrando {len(filtered)} de {len(self.games)} juegos · {sum(len(g["extras"]) for g in self.games)} complementos agrupados')
-        # Tk calcula las posiciones de las tarjetas después de dibujarlas.
         self.after_idle(self.alinear_filtros_con_caratulas)
 
     def alinear_filtros_con_caratulas(self):
