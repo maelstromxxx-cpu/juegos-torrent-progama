@@ -812,7 +812,7 @@ class BarraProgresoVerde(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.27')
+        self.title('Juegos Torrent 2.7.28')
         self._startup_split_job = None
         self._startup_split_done = False
         self.bind('<Map>', self._on_window_mapped, add='+')
@@ -994,7 +994,7 @@ class App(tk.Tk):
                                     wraplength=630, justify='center', font=('Segoe UI', 10))
         self.detail_type.pack(anchor='center', padx=18, pady=(0, 12))
 
-        # Sello Certified de FitGirl: 100x100, a la derecha bajo el encabezado.
+        # Sello Certified de FitGirl: 75x75, a la derecha bajo el encabezado.
         # La imagen conserva transparencia y no interfiere con las carátulas.
         self.fitgirl_badge_photo = None
         badge_path = ASSETS / 'fitgirl_certified.png'
@@ -1002,7 +1002,7 @@ class App(tk.Tk):
             try:
                 with Image.open(badge_path) as badge_img:
                     badge_img = badge_img.convert('RGBA')
-                    badge_img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                    badge_img.thumbnail((75, 75), Image.Resampling.LANCZOS)
                     self.fitgirl_badge_photo = ImageTk.PhotoImage(badge_img, master=self)
             except (OSError, ValueError):
                 logging.exception('No se pudo cargar la insignia FitGirl')
@@ -2106,7 +2106,7 @@ class App(tk.Tk):
         self.update_owned_button()
         clean_title, extra_info = split_game_title(game['name'])
         self.detail_title.pack_configure(
-            padx=(18, 118) if self.current_repacker == 'FitGirl' and self.fitgirl_badge_photo else 18)
+            padx=(18, 93) if self.current_repacker == 'FitGirl' and self.fitgirl_badge_photo else 18)
         self.detail_title.config(text=clean_title)
         self.download_button.config(state='disabled' if self.busy else 'normal',
                                     text=self.action_label(game, complement=False))
