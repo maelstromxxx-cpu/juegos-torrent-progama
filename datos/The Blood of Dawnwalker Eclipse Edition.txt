@@ -1,8 +1,0 @@
-Año: 2026
-Género: Acción / Aventura / Rol / Survival Horror
-Tamaño: 40GB
-Modo: Singleplayer
-Idioma: MULTI
-Fecha de incorporación: 25/10/2026
-Puntuación: 8,3
-Metacritic: 81

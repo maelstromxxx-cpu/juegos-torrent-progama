@@ -1,8 +1,0 @@
-Año: 2025
-Género: Acción / Shooter / FPS
-Tamaño: 86GB
-Modo: Singleplayer / Multiplayer
-Idioma: Español
-Fecha de incorporación: 25/10/2026
-Puntuación: 8,3
-Metacritic: 82

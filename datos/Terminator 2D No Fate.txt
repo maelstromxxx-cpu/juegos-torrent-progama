@@ -1,8 +1,0 @@
-Año: 2026
-Género: Acción / Arcade / Shoot 'em up / Run and Gun / Pixel Art / 2D / Ciencia ficción
-Tamaño: 423MB
-Modo: Singleplayer
-Idioma: MULTI
-Fecha de incorporación: 26/10/2026
-Puntuación: 7,5
-Metacritic: 72

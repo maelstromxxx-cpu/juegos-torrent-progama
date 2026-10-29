@@ -1,8 +1,0 @@
-Año: 2026
-Género: Acción / Shooter / FPS
-Tamaño: 57GB
-Modo: Singleplayer / Multiplayer
-Idioma: MULTI
-Fecha de incorporación: 25/10/2026
-Puntuación: 8,5
-Metacritic: 84

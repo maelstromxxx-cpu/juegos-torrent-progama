@@ -1,8 +1,0 @@
-Año: 2015
-Género: Acción / Aventura / Hack and slash
-Tamaño: 10GB
-Modo: Singleplayer
-Idioma: MULTI
-Fecha de incorporación: 25/10/2026
-Puntuación: 9,1
-Metacritic: 92

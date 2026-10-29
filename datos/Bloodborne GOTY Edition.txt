@@ -1,8 +1,0 @@
-Año: 2026
-Género: Acción / Aventura / Rol / Soulslike / Terror
-Tamaño: 14GB
-Modo: Singleplayer / Multiplayer
-Idioma: MULTI
-Fecha de incorporación: 25/10/2026
-Puntuación: 9,3
-Metacritic: 92

@@ -1,8 +1,0 @@
-Año: 2022
-Género: Acción / Shooter / FPS / Tercera Persona / Táctico / Sigilo / Francotirador / Multijugador
-Tamaño: 37GB
-Modo: Singleplayer / Multiplayer
-Idioma: MULTI
-Fecha de incorporación: 26/10/2026
-Puntuación: 8,8
-Metacritic: 77
