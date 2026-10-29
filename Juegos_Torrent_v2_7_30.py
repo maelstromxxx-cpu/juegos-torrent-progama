@@ -513,6 +513,8 @@ def identify_repacker(game, metadata=None):
     # Primero un campo explícito; luego etiquetas del título, sin inferir por el enlace.
     sources = [explicit] if explicit else []
     sources.append(game.get('name', ''))
+    # Algunos catálogos identifican al repacker en un complemento.
+    sources.extend(extra.get('name', '') for extra in game.get('extras', []))
     patterns = (
         ('FitGirl', r'(?<![\w])fit[ ._-]*girl(?![\w])'),
         ('ElAmigos', r'(?<![\w])el[ ._-]*amigos(?![\w])'),
@@ -812,7 +814,7 @@ class BarraProgresoVerde(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.28')
+        self.title('Juegos Torrent 2.7.30')
         self._startup_split_job = None
         self._startup_split_done = False
         self.bind('<Map>', self._on_window_mapped, add='+')
@@ -994,20 +996,26 @@ class App(tk.Tk):
                                     wraplength=630, justify='center', font=('Segoe UI', 10))
         self.detail_type.pack(anchor='center', padx=18, pady=(0, 12))
 
-        # Sello Certified de FitGirl: 75x75, a la derecha bajo el encabezado.
-        # La imagen conserva transparencia y no interfiere con las carátulas.
-        self.fitgirl_badge_photo = None
-        badge_path = ASSETS / 'fitgirl_certified.png'
-        if Image is not None and ImageTk is not None and badge_path.is_file():
-            try:
-                with Image.open(badge_path) as badge_img:
-                    badge_img = badge_img.convert('RGBA')
-                    badge_img.thumbnail((75, 75), Image.Resampling.LANCZOS)
-                    self.fitgirl_badge_photo = ImageTk.PhotoImage(badge_img, master=self)
-            except (OSError, ValueError):
-                logging.exception('No se pudo cargar la insignia FitGirl')
-        self.fitgirl_badge = tk.Label(detail_frame, image=self.fitgirl_badge_photo,
-                                      bg=PANEL, bd=0, highlightthickness=0)
+        # Insignias circulares de repackers: todas a 75x75 px.
+        # FitGirl conserva su PNG original; las demás se cargan desde recursos/.
+        self.repacker_badge_photos = {}
+        for repacker_name, filename in (
+                ('FitGirl', 'fitgirl_certified.png'),
+                ('ElAmigos', 'elamigos_certified.png'),
+                ('DODI', 'dodi_certified.png'),
+                ('KaOs', 'kaos_certified.png')):
+            badge_path = ASSETS / filename
+            if Image is not None and ImageTk is not None and badge_path.is_file():
+                try:
+                    with Image.open(badge_path) as badge_img:
+                        badge_img = badge_img.convert('RGBA')
+                        badge_img.thumbnail((75, 75), Image.Resampling.LANCZOS)
+                        self.repacker_badge_photos[repacker_name] = ImageTk.PhotoImage(
+                            badge_img, master=self)
+                except (OSError, ValueError):
+                    logging.exception('No se pudo cargar la insignia %s', repacker_name)
+        self.repacker_badge = tk.Label(detail_frame, bg=PANEL, bd=0,
+                                       highlightthickness=0, width=75, height=75)
 
 
         # Una sola fila: carátula a la izquierda, capturas a la derecha.
@@ -1265,7 +1273,7 @@ class App(tk.Tk):
 
         # Insignia pequeña a la derecha, integrada al banner.
         repacker = getattr(self, 'current_repacker', None)
-        if repacker and width >= 350 and not (repacker == 'FitGirl' and self.fitgirl_badge_photo):
+        if repacker and width >= 350 and repacker not in self.repacker_badge_photos:
             colors = {
                 'FitGirl': ('#294c4b', '#8de0c5'),
                 'ElAmigos': ('#344d69', '#a9d1ff'),
@@ -1636,7 +1644,7 @@ class App(tk.Tk):
         self.visible_game_names = []
         self.selected = None
         self.current_repacker = None
-        self.fitgirl_badge.place_forget()
+        self.repacker_badge.place_forget()
         self.redraw_ficha_header()
         self.download_button.config(state='disabled')
         self.guide_button.place_forget()
@@ -2099,14 +2107,19 @@ class App(tk.Tk):
         self.selected = game
         self.current_repacker = identify_repacker(game, find_game_data(game['name']))
         self.redraw_ficha_header()
-        self.fitgirl_badge.place_forget()
-        if self.current_repacker == 'FitGirl' and self.fitgirl_badge_photo is not None:
-            self.fitgirl_badge.place(relx=1.0, x=-18, y=70, anchor='ne')
-            self.fitgirl_badge.lift()
+        self.repacker_badge.place_forget()
+        self.repacker_badge.config(image='')  # No conservar dimensiones de la insignia anterior.
+        badge_photo = self.repacker_badge_photos.get(self.current_repacker)
+        if badge_photo is not None:
+            self.repacker_badge.config(image=badge_photo)
+            self.repacker_badge.place(relx=1.0, x=-18, y=70, anchor='ne')
+            self.repacker_badge.lift()
         self.update_owned_button()
         clean_title, extra_info = split_game_title(game['name'])
         self.detail_title.pack_configure(
-            padx=(18, 93) if self.current_repacker == 'FitGirl' and self.fitgirl_badge_photo else 18)
+            padx=(18, 93) if badge_photo is not None else 18)
+        # Reservar espacio vertical para que el sello no tape las capturas.
+        self.detail_title.pack_configure(pady=(0, 34) if badge_photo is not None else (0, 6))
         self.detail_title.config(text=clean_title)
         self.download_button.config(state='disabled' if self.busy else 'normal',
                                     text=self.action_label(game, complement=False))

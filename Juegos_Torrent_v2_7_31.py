@@ -513,6 +513,8 @@ def identify_repacker(game, metadata=None):
     # Primero un campo explícito; luego etiquetas del título, sin inferir por el enlace.
     sources = [explicit] if explicit else []
     sources.append(game.get('name', ''))
+    # Algunos catálogos identifican al repacker en un complemento.
+    sources.extend(extra.get('name', '') for extra in game.get('extras', []))
     patterns = (
         ('FitGirl', r'(?<![\w])fit[ ._-]*girl(?![\w])'),
         ('ElAmigos', r'(?<![\w])el[ ._-]*amigos(?![\w])'),
@@ -812,7 +814,7 @@ class BarraProgresoVerde(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.29')
+        self.title('Juegos Torrent 2.7.31')
         self._startup_split_job = None
         self._startup_split_done = False
         self.bind('<Map>', self._on_window_mapped, add='+')
@@ -1013,7 +1015,12 @@ class App(tk.Tk):
                 except (OSError, ValueError):
                     logging.exception('No se pudo cargar la insignia %s', repacker_name)
         self.repacker_badge = tk.Label(detail_frame, bg=PANEL, bd=0,
-                                       highlightthickness=0)
+                                       highlightthickness=0, width=75, height=75)
+        self.repacker_tooltip = None
+        self.repacker_tooltip_job = None
+        self.repacker_badge.bind('<Enter>', self.schedule_repacker_tooltip)
+        self.repacker_badge.bind('<Leave>', self.hide_repacker_tooltip)
+        self.repacker_badge.bind('<ButtonPress>', self.hide_repacker_tooltip)
 
 
         # Una sola fila: carátula a la izquierda, capturas a la derecha.
@@ -1641,6 +1648,7 @@ class App(tk.Tk):
         self.cover_cards.clear()
         self.visible_game_names = []
         self.selected = None
+        self.hide_repacker_tooltip()
         self.current_repacker = None
         self.repacker_badge.place_forget()
         self.redraw_ficha_header()
@@ -2098,14 +2106,54 @@ class App(tk.Tk):
         if self.filters.winfo_width() != ancho:
             self.filters.configure(width=ancho)
 
+    def schedule_repacker_tooltip(self, event=None):
+        """Muestra el nombre completo tras una breve pausa sobre la insignia."""
+        self.hide_repacker_tooltip()
+        if self.current_repacker in self.repacker_badge_photos:
+            self.repacker_tooltip_job = self.after(450, self.show_repacker_tooltip)
+
+    def show_repacker_tooltip(self):
+        self.repacker_tooltip_job = None
+        names = {'FitGirl': 'FitGirl Repacks', 'ElAmigos': 'ElAmigos Repacks',
+                 'DODI': 'DODI Repacks', 'KaOs': 'KaOs Krew Repacks'}
+        name = names.get(self.current_repacker)
+        if not name or not self.repacker_badge.winfo_ismapped():
+            return
+        tip = tk.Toplevel(self)
+        tip.withdraw()
+        tip.overrideredirect(True)
+        tip.configure(bg='#40546b')
+        label = tk.Label(tip, text=name, bg='#253344', fg=FG,
+                         font=('Segoe UI', 10), padx=10, pady=6,
+                         bd=1, relief='solid')
+        label.pack()
+        tip.update_idletasks()
+        x = min(self.winfo_pointerx() + 12,
+                self.winfo_screenwidth() - tip.winfo_reqwidth() - 8)
+        y = min(self.winfo_pointery() + 18,
+                self.winfo_screenheight() - tip.winfo_reqheight() - 8)
+        tip.geometry(f'+{max(0, x)}+{max(0, y)}')
+        self.repacker_tooltip = tip
+        tip.deiconify()
+
+    def hide_repacker_tooltip(self, event=None):
+        if self.repacker_tooltip_job is not None:
+            self.after_cancel(self.repacker_tooltip_job)
+            self.repacker_tooltip_job = None
+        if self.repacker_tooltip is not None:
+            self.repacker_tooltip.destroy()
+            self.repacker_tooltip = None
+
     def select_game(self, game):
         # Primera selección: retiramos la bienvenida y dejamos la ficha intacta.
         if self.welcome.winfo_manager():
             self.welcome.place_forget()
         self.selected = game
+        self.hide_repacker_tooltip()
         self.current_repacker = identify_repacker(game, find_game_data(game['name']))
         self.redraw_ficha_header()
         self.repacker_badge.place_forget()
+        self.repacker_badge.config(image='')  # No conservar dimensiones de la insignia anterior.
         badge_photo = self.repacker_badge_photos.get(self.current_repacker)
         if badge_photo is not None:
             self.repacker_badge.config(image=badge_photo)
@@ -2115,6 +2163,8 @@ class App(tk.Tk):
         clean_title, extra_info = split_game_title(game['name'])
         self.detail_title.pack_configure(
             padx=(18, 93) if badge_photo is not None else 18)
+        # Reservar espacio vertical para que el sello no tape las capturas.
+        self.detail_title.pack_configure(pady=(0, 34) if badge_photo is not None else (0, 6))
         self.detail_title.config(text=clean_title)
         self.download_button.config(state='disabled' if self.busy else 'normal',
                                     text=self.action_label(game, complement=False))
