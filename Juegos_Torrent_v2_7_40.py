@@ -903,7 +903,7 @@ class BotonDescargaModerno(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.38')
+        self.title('Juegos Torrent 2.7.40')
         self._startup_split_job = None
         self._startup_split_done = False
         self.bind('<Map>', self._on_window_mapped, add='+')
@@ -924,6 +924,8 @@ class App(tk.Tk):
         self.sync_hide_job = None
         self.cover_cards = {}
         self.card_widgets = {}  # Tarjetas reutilizables: no destruir al cambiar columnas.
+        self.card_parts = {}
+        self.hovered_card = None
         self.cover_photo_cache = {}  # Miniaturas compuestas reutilizadas por archivo/estado.
         self.resize_layout_job = None
         self.visible_game_names = []
@@ -989,7 +991,16 @@ class App(tk.Tk):
                              font=('Segoe UI', 10), bg=PANEL, fg=FG,
                              insertbackground=FG, relief='flat', bd=0,
                              highlightthickness=0)
-        searchbox.place(x=34, rely=0.5, anchor='w', relwidth=1, width=-46, height=21)
+        searchbox.place(x=34, rely=0.5, anchor='w', relwidth=1, width=-73, height=21)
+        clear_search = tk.Label(search_area, text='✕', fg=MUTED, bg=PANEL,
+                                font=('Segoe UI', 10, 'bold'), cursor='hand2')
+        clear_search.place(relx=1, x=-17, rely=0.5, anchor='center')
+        clear_search.bind('<Button-1>', lambda _: (self.search.set(''), searchbox.focus_set()))
+        clear_search.bind('<Enter>', lambda _: clear_search.config(fg=ACCENT))
+        clear_search.bind('<Leave>', lambda _: clear_search.config(fg=MUTED))
+        clear_search.place_forget()
+        self.search.trace_add('write', lambda *_: clear_search.place(relx=1, x=-17, rely=0.5, anchor='center')
+                              if self.search.get() else clear_search.place_forget())
         hint = tk.Label(search_area, text='Buscar juegos...', fg=MUTED, bg=PANEL,
                         font=('Segoe UI', 10), cursor='xterm')
         hint.place(x=36, rely=0.5, anchor='w')
@@ -1768,6 +1779,8 @@ class App(tk.Tk):
         for card in self.card_widgets.values():
             card.destroy()
         self.card_widgets.clear()
+        self.card_parts.clear()
+        self.hovered_card = None
         self.cover_photo_cache.clear()
         self.cover_cards.clear()
         self.visible_game_names = []
@@ -2190,9 +2203,15 @@ class App(tk.Tk):
                 title.pack(pady=(7, 0))
                 for widget in (card, cover, title):
                     widget.bind('<Button-1>', lambda _, g=game: self.select_game(g))
+                    widget.bind('<Enter>', lambda _, n=name: self.set_card_hover(n, True))
+                    widget.bind('<Leave>', lambda event, n=name: self.card_pointer_leave(n, event))
                 self.card_widgets[name] = card
+                self.card_parts[name] = (cover, title)
+                self.paint_card(name)
             card.grid(row=i // cols, column=i % cols, padx=8, pady=8, sticky='n')
         self.visible_game_names = visible
+        if self.selected:
+            self.paint_card(self.selected['name'])
         # Un solo indicador reutilizable en lugar de crear uno por cada búsqueda.
         if not hasattr(self, 'empty_catalog_label'):
             self.empty_catalog_label = tk.Label(self.grid_frame, fg=MUTED, bg=BG,
@@ -2210,8 +2229,40 @@ class App(tk.Tk):
         else:
             self.empty_catalog_label.grid_remove()
         if not self.catalog_loading and not self.catalog_error:
-            self.status.config(text=f'Mostrando {len(filtered)} de {len(self.games)} juegos · {sum(len(g["extras"]) for g in self.games)} complementos agrupados')
+            count = f'{len(filtered)} coincidencias de {len(self.games)} juegos' if text else f'Mostrando {len(filtered)} de {len(self.games)} juegos'
+            self.status.config(text=f'{count} · {sum(len(g["extras"]) for g in self.games)} complementos agrupados')
         self.after_idle(self.alinear_filtros_con_caratulas)
+
+    def paint_card(self, name):
+        card = self.card_widgets.get(name)
+        parts = self.card_parts.get(name)
+        if card is None or parts is None:
+            return
+        selected = self.selected is not None and self.selected['name'] == name
+        hovered = self.hovered_card == name
+        color = '#315b4d' if selected else '#314758' if hovered else CARD
+        card.config(bg=color)
+        for widget in parts:
+            # Conservar el fondo de las carátulas sin imagen.
+            if widget is parts[1] or getattr(widget, 'image', None) is not None:
+                widget.config(bg=color)
+
+    def set_card_hover(self, name, active):
+        old = self.hovered_card
+        self.hovered_card = name if active else None
+        if old and old != name:
+            self.paint_card(old)
+        self.paint_card(name)
+
+    def card_pointer_leave(self, name, event):
+        card = self.card_widgets.get(name)
+        if card is None:
+            return
+        x, y = card.winfo_pointerxy()
+        if 0 <= x - card.winfo_rootx() < card.winfo_width() and 0 <= y - card.winfo_rooty() < card.winfo_height():
+            return
+        if self.hovered_card == name:
+            self.set_card_hover(name, False)
 
     def alinear_filtros_con_caratulas(self):
         """Alinea el selector derecho con el borde real de la última tarjeta."""
@@ -2287,7 +2338,11 @@ class App(tk.Tk):
         # Primera selección: retiramos la bienvenida y dejamos la ficha intacta.
         if self.welcome.winfo_manager():
             self.welcome.place_forget()
+        previous = self.selected['name'] if self.selected else None
         self.selected = game
+        if previous:
+            self.paint_card(previous)
+        self.paint_card(game['name'])
         self.hide_repacker_tooltip()
         self.current_repacker = identify_repacker(game, find_game_data(game['name']))
         self.redraw_ficha_header()
@@ -2324,16 +2379,27 @@ class App(tk.Tk):
         extras = game['extras']
         self.extras_title.config(text=f'COMPLEMENTOS ({len(extras)})' if extras else '')
         for extra in extras:
-            tk.Label(self.extras_frame, text=extra['name'], fg=FG, bg=CARD,
-                     wraplength=285, justify='left', anchor='w', padx=10, pady=7,
-                     font=('Segoe UI', 10)).pack(fill='x', pady=(7, 0))
-            tk.Button(self.extras_frame, text=self.action_label(extra, complement=True),
-                      command=lambda e=extra: self.run_entry(e), state='disabled' if self.busy else 'normal',
-                      bg=ACCENT, fg='#102018', relief='flat').pack(fill='x', pady=(0, 3))
+            row = tk.Frame(self.extras_frame, bg=CARD, padx=10, pady=9)
+            row.pack(fill='x', pady=(5, 3))
+            name_label = tk.Label(row, text=extra['name'], fg=FG, bg=CARD,
+                                  wraplength=240, justify='left', anchor='w',
+                                  font=('Segoe UI', 10))
+            name_label.pack(side='left', fill='x', expand=True)
+            actions = tk.Frame(row, bg=CARD)
+            actions.pack(side='right', padx=(8, 0))
+            btn = tk.Button(actions, text='↓  ' + self.action_label(extra, complement=True),
+                            command=lambda e=extra: self.run_entry(e),
+                            state='disabled' if self.busy else 'normal',
+                            bg='#20583f', fg='#e9fff2', activebackground='#307e59',
+                            activeforeground='white', relief='flat', bd=0,
+                            padx=10, pady=6, cursor='hand2', font=('Segoe UI', 9, 'bold'))
+            btn.pack(side='top', fill='x')
             if extra.get('guide'):
-                tk.Button(self.extras_frame, text='Abrir instrucciones',
+                tk.Button(actions, text='Ver instrucciones →',
                           command=lambda e=extra: self.run_guide(e),
-                          bg=CARD, fg=FG, relief='flat').pack(fill='x', pady=(0, 3))
+                          bg=CARD, fg=MUTED, activebackground=CARD,
+                          activeforeground=ACCENT, relief='flat', bd=0,
+                          cursor='hand2', font=('Segoe UI', 9)).pack(side='top', pady=(5, 0))
 
 
     def download_selected(self):
@@ -2441,9 +2507,11 @@ class App(tk.Tk):
         self.download_game_name = self.selected['name'] if self.selected else entry['name']
         self.busy = True
         self.download_button.config(state='disabled')
-        for child in self.extras_frame.winfo_children():
-            if isinstance(child, tk.Button):
-                child.config(state='disabled')
+        for row in self.extras_frame.winfo_children():
+            for child in row.winfo_children():
+                for button in child.winfo_children():
+                    if isinstance(button, tk.Button):
+                        button.config(state='disabled')
         self.status.config(text='Descargando: ' + entry['name'])
 
         def progress(done, total):
