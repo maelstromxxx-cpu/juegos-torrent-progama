@@ -520,6 +520,7 @@ def identify_repacker(game, metadata=None):
         ('ElAmigos', r'(?<![\w])el[ ._-]*amigos(?![\w])'),
         ('DODI', r'(?<![\w])dodi(?![\w])'),
         ('KaOs', r'(?<![\w])kaos(?![\w])'),
+        ('Rohankar', r'(?<![\w])rohankar(?![\w])'),
     )
     for source in sources:
         for label, pattern in patterns:
@@ -814,7 +815,7 @@ class BarraProgresoVerde(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.31')
+        self.title('Juegos Torrent 2.7.35')
         self._startup_split_job = None
         self._startup_split_done = False
         self.bind('<Map>', self._on_window_mapped, add='+')
@@ -954,6 +955,25 @@ class App(tk.Tk):
         self.canvas.bind_all('<MouseWheel>', self.on_mousewheel)
         self.last_columns = 0
 
+        # Indicador de carga centrado sobre el panel del catálogo.
+        # La animación utiliza únicamente Canvas; no necesita recursos externos.
+        self.loading_panel = tk.Frame(self.canvas, bg=BG)
+        self.loading_title = tk.Label(
+            self.loading_panel, text='CARGANDO JUEGOS...',
+            bg=BG, fg=ACCENT, font=('Segoe UI', 14, 'bold'))
+        self.loading_title.pack(pady=(0, 15))
+        self.loading_bar = tk.Canvas(
+            self.loading_panel, width=360, height=28,
+            bg=BG, highlightthickness=0, bd=0)
+        self.loading_bar.pack()
+        self.loading_caption = tk.Label(
+            self.loading_panel, text='Preparando tu biblioteca',
+            bg=BG, fg=MUTED, font=('Segoe UI', 10))
+        self.loading_caption.pack(pady=(12, 0))
+        self._loading_phase = 0
+        self._loading_job = None
+        self.show_catalog_loading()
+
         # Ficha desplazable para que quepan todos los complementos.
         detail_canvas = tk.Canvas(right, bg=PANEL, highlightthickness=0)
         detail_scroll = BarraDesplazamiento(right, command=detail_canvas.yview, bg=PANEL)
@@ -1003,7 +1023,8 @@ class App(tk.Tk):
                 ('FitGirl', 'fitgirl_certified.png'),
                 ('ElAmigos', 'elamigos_certified.png'),
                 ('DODI', 'dodi_certified.png'),
-                ('KaOs', 'kaos_certified.png')):
+                ('KaOs', 'kaos_certified.png'),
+                ('Rohankar', 'rohankar_certified.png')):
             badge_path = ASSETS / filename
             if Image is not None and ImageTk is not None and badge_path.is_file():
                 try:
@@ -1196,6 +1217,58 @@ class App(tk.Tk):
         self.load_catalog()
         self.load_remote_manifest()
 
+    def show_catalog_loading(self):
+        """Muestra la barra animada en el centro del área de carátulas."""
+        self.loading_panel.place(relx=0.5, rely=0.5, anchor='center')
+        self.loading_panel.lift()
+        if self._loading_job is None:
+            self.animate_catalog_loading()
+
+    def hide_catalog_loading(self):
+        """Detiene la animación cuando finaliza la consulta del catálogo."""
+        if self._loading_job is not None:
+            self.after_cancel(self._loading_job)
+            self._loading_job = None
+        self.loading_panel.place_forget()
+
+    def animate_catalog_loading(self):
+        """Barra de progreso indeterminado, con tonos verdes del tema."""
+        self._loading_job = None
+        if not self.loading_panel.winfo_manager():
+            return
+        c = self.loading_bar
+        c.delete('all')
+        width, height = 360, 28
+        # Barra de extremos semicirculares (cápsula), integrada al tema oscuro.
+        # Los óvalos de los extremos evitan las esquinas cuadradas de create_rectangle.
+        def capsule(x1, y1, x2, y2, fill, outline='', border=0):
+            r = (y2 - y1) / 2
+            c.create_rectangle(x1 + r, y1, x2 - r, y2,
+                               fill=fill, outline='')
+            c.create_oval(x1, y1, x1 + 2*r, y2, fill=fill, outline='')
+            c.create_oval(x2 - 2*r, y1, x2, y2, fill=fill, outline='')
+            if outline and border:
+                c.create_arc(x1, y1, x1 + 2*r, y2, start=90, extent=180,
+                             style='arc', outline=outline, width=border)
+                c.create_arc(x2 - 2*r, y1, x2, y2, start=270, extent=180,
+                             style='arc', outline=outline, width=border)
+                c.create_line(x1+r, y1, x2-r, y1, fill=outline, width=border)
+                c.create_line(x1+r, y2, x2-r, y2, fill=outline, width=border)
+
+        capsule(3, 3, width-3, height-3, CARD, '#3eae78', 2)
+        travel = width - 132
+        phase = self._loading_phase % 100
+        x = 7 + travel * (phase / 99)
+        capsule(x, 7, x+116, height-7, '#237a52')
+        # Brillo superior y líneas diagonales, dentro del relleno móvil.
+        c.create_line(x+10, 10, x+106, 10, fill='#65eba0', width=2)
+        for i in range(6):
+            stripe_x = x + 10 + i*17
+            c.create_line(stripe_x, 18, stripe_x+8, 10,
+                          fill='#48bd80', width=3)
+        self._loading_phase += 2
+        self._loading_job = self.after(35, self.animate_catalog_loading)
+
     def _on_window_mapped(self, event):
         """El HWND de Windows ya existe al recibir Map."""
         if event.widget is not self:
@@ -1284,6 +1357,7 @@ class App(tk.Tk):
                 'ElAmigos': ('#344d69', '#a9d1ff'),
                 'DODI': ('#55415f', '#e3baf7'),
                 'KaOs': ('#61483d', '#ffd2a8'),
+                'Rohankar': ('#28435c', '#c4e8ff'),
             }
             fill, foreground = colors[repacker]
             x1, x2 = width - 136, width - 14
@@ -1586,6 +1660,7 @@ class App(tk.Tk):
     def load_catalog(self):
         self.catalog_loading = True
         self.catalog_error = False
+        self.show_catalog_loading()
         self.status.config(text='Consultando catálogo remoto de Google Drive...')
         if not self.games:
             self.render_games()
@@ -1637,6 +1712,7 @@ class App(tk.Tk):
         threading.Thread(target=work, daemon=True).start()
 
     def catalog_loaded(self, games, offline=False):
+        self.hide_catalog_loading()
         self.catalog_loading = False
         self.catalog_error = False
         self.games = group_catalog(games)
@@ -1664,6 +1740,7 @@ class App(tk.Tk):
         self.schedule_remote_assets()
 
     def catalog_failed(self, msg):
+        self.hide_catalog_loading()
         self.catalog_loading = False
         self.catalog_error = True
         if not self.games:
@@ -2073,7 +2150,9 @@ class App(tk.Tk):
         if not hasattr(self, 'empty_catalog_label'):
             self.empty_catalog_label = tk.Label(self.grid_frame, fg=MUTED, bg=BG,
                                                 font=('Segoe UI', 12))
-        if not filtered:
+        if not filtered and self.catalog_loading:
+            self.empty_catalog_label.grid_remove()
+        elif not filtered:
             empty_message = ('Cargando juegos...' if self.catalog_loading and not self.games
                              else 'No se pudo cargar el catálogo.' if self.catalog_error and not self.games
                              else 'No hay juegos en tu colección.' if self.sort_mode.get() == 'En Colección'
@@ -2115,7 +2194,8 @@ class App(tk.Tk):
     def show_repacker_tooltip(self):
         self.repacker_tooltip_job = None
         names = {'FitGirl': 'FitGirl Repacks', 'ElAmigos': 'ElAmigos Repacks',
-                 'DODI': 'DODI Repacks', 'KaOs': 'KaOs Krew Repacks'}
+                 'DODI': 'DODI Repacks', 'KaOs': 'KaOs Krew Repacks',
+                 'Rohankar': 'Rohankar Repacks'}
         name = names.get(self.current_repacker)
         if not name or not self.repacker_badge.winfo_ismapped():
             return
