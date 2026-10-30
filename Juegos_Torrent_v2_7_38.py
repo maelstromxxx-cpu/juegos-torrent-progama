@@ -815,7 +815,7 @@ class BarraProgresoVerde(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.35')
+        self.title('Juegos Torrent 2.7.38')
         self._startup_split_job = None
         self._startup_split_done = False
         self.bind('<Map>', self._on_window_mapped, add='+')
@@ -1016,33 +1016,29 @@ class App(tk.Tk):
                                     wraplength=630, justify='center', font=('Segoe UI', 10))
         self.detail_type.pack(anchor='center', padx=18, pady=(0, 12))
 
-        # Insignias circulares de repackers: todas a 75x75 px.
-        # FitGirl conserva su PNG original; las demás se cargan desde recursos/.
+        # Insignias horizontales: integradas al Canvas de la cabecera.
+        # No ocupan espacio del título ni del subtítulo.
         self.repacker_badge_photos = {}
         for repacker_name, filename in (
-                ('FitGirl', 'fitgirl_certified.png'),
-                ('ElAmigos', 'elamigos_certified.png'),
-                ('DODI', 'dodi_certified.png'),
-                ('KaOs', 'kaos_certified.png'),
-                ('Rohankar', 'rohankar_certified.png')):
+                ('FitGirl', 'fitgirl_banner.png'),
+                ('ElAmigos', 'elamigos_banner.png'),
+                ('DODI', 'dodi_banner.png'),
+                ('KaOs', 'kaos_banner.png'),
+                ('Rohankar', 'rohankar_banner.png')):
             badge_path = ASSETS / filename
             if Image is not None and ImageTk is not None and badge_path.is_file():
                 try:
                     with Image.open(badge_path) as badge_img:
                         badge_img = badge_img.convert('RGBA')
-                        badge_img.thumbnail((75, 75), Image.Resampling.LANCZOS)
+                        badge_img = badge_img.resize((125, 52), Image.Resampling.LANCZOS)
                         self.repacker_badge_photos[repacker_name] = ImageTk.PhotoImage(
                             badge_img, master=self)
                 except (OSError, ValueError):
                     logging.exception('No se pudo cargar la insignia %s', repacker_name)
-        self.repacker_badge = tk.Label(detail_frame, bg=PANEL, bd=0,
-                                       highlightthickness=0, width=75, height=75)
         self.repacker_tooltip = None
         self.repacker_tooltip_job = None
-        self.repacker_badge.bind('<Enter>', self.schedule_repacker_tooltip)
-        self.repacker_badge.bind('<Leave>', self.hide_repacker_tooltip)
-        self.repacker_badge.bind('<ButtonPress>', self.hide_repacker_tooltip)
-
+        self.ficha_header.bind('<Motion>', self.on_header_badge_motion)
+        self.ficha_header.bind('<Leave>', self.hide_repacker_tooltip)
 
         # Una sola fila: carátula a la izquierda, capturas a la derecha.
         # Este contenedor permanece en el mismo lugar aunque cambiemos de juego.
@@ -1349,9 +1345,13 @@ class App(tk.Tk):
         canvas.create_line(0, height - 1, min(100, width), height - 1,
                            fill=ACCENT, width=2)
 
-        # Insignia pequeña a la derecha, integrada al banner.
+        # Insignia rectangular alineada a la derecha, dentro del encabezado.
         repacker = getattr(self, 'current_repacker', None)
-        if repacker and width >= 350 and repacker not in self.repacker_badge_photos:
+        badge_photo = self.repacker_badge_photos.get(repacker)
+        if badge_photo is not None and width >= 355:
+            canvas.create_image(width - 12, height // 2, image=badge_photo,
+                                anchor='e', tags=('repacker_banner',))
+        if repacker and width >= 355 and badge_photo is None:
             colors = {
                 'FitGirl': ('#294c4b', '#8de0c5'),
                 'ElAmigos': ('#344d69', '#a9d1ff'),
@@ -1726,7 +1726,6 @@ class App(tk.Tk):
         self.selected = None
         self.hide_repacker_tooltip()
         self.current_repacker = None
-        self.repacker_badge.place_forget()
         self.redraw_ficha_header()
         self.download_button.config(state='disabled')
         self.guide_button.place_forget()
@@ -2185,6 +2184,18 @@ class App(tk.Tk):
         if self.filters.winfo_width() != ancho:
             self.filters.configure(width=ancho)
 
+    def on_header_badge_motion(self, event):
+        """Tooltip únicamente cuando el puntero está sobre la insignia."""
+        badge = self.repacker_badge_photos.get(self.current_repacker)
+        if badge is None or event.x < self.ficha_header.winfo_width() - 12 - badge.width() or event.x > self.ficha_header.winfo_width() - 12:
+            self.hide_repacker_tooltip()
+            return
+        if abs(event.y - self.ficha_header.winfo_height() / 2) <= badge.height() / 2:
+            if self.repacker_tooltip is None and self.repacker_tooltip_job is None:
+                self.schedule_repacker_tooltip()
+        else:
+            self.hide_repacker_tooltip()
+
     def schedule_repacker_tooltip(self, event=None):
         """Muestra el nombre completo tras una breve pausa sobre la insignia."""
         self.hide_repacker_tooltip()
@@ -2197,7 +2208,7 @@ class App(tk.Tk):
                  'DODI': 'DODI Repacks', 'KaOs': 'KaOs Krew Repacks',
                  'Rohankar': 'Rohankar Repacks'}
         name = names.get(self.current_repacker)
-        if not name or not self.repacker_badge.winfo_ismapped():
+        if not name or not self.ficha_header.winfo_ismapped():
             return
         tip = tk.Toplevel(self)
         tip.withdraw()
@@ -2232,19 +2243,10 @@ class App(tk.Tk):
         self.hide_repacker_tooltip()
         self.current_repacker = identify_repacker(game, find_game_data(game['name']))
         self.redraw_ficha_header()
-        self.repacker_badge.place_forget()
-        self.repacker_badge.config(image='')  # No conservar dimensiones de la insignia anterior.
-        badge_photo = self.repacker_badge_photos.get(self.current_repacker)
-        if badge_photo is not None:
-            self.repacker_badge.config(image=badge_photo)
-            self.repacker_badge.place(relx=1.0, x=-18, y=70, anchor='ne')
-            self.repacker_badge.lift()
         self.update_owned_button()
         clean_title, extra_info = split_game_title(game['name'])
-        self.detail_title.pack_configure(
-            padx=(18, 93) if badge_photo is not None else 18)
-        # Reservar espacio vertical para que el sello no tape las capturas.
-        self.detail_title.pack_configure(pady=(0, 34) if badge_photo is not None else (0, 6))
+        # El sello ya no invade esta zona: título y subtítulo siempre centrados.
+        self.detail_title.pack_configure(padx=18, pady=(0, 6))
         self.detail_title.config(text=clean_title)
         self.download_button.config(state='disabled' if self.busy else 'normal',
                                     text=self.action_label(game, complement=False))
@@ -2258,7 +2260,7 @@ class App(tk.Tk):
             self.guide_button.lift()
         self.detail_type.config(text=extra_info)
         if extra_info:
-            self.detail_type.pack(anchor='center', padx=18, pady=(0, 12))
+            self.detail_type.pack(before=self.media_row, anchor='center', padx=18, pady=(0, 12))
         else:
             self.detail_type.pack_forget()
         photo = self.load_cover(game['name'], 225, 315)
