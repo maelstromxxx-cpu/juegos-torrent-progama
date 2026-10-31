@@ -1,0 +1,1 @@
+PROBLEMAS FRECUENTES\n\nAnotá errores comunes, causas comprobadas y soluciones. Incluí siempre el mensaje de error exacto cuando sea posible.

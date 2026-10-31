@@ -15,7 +15,7 @@ import queue
 import logging
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, font as tkfont
 
 try:
     from PIL import Image, ImageTk, ImageDraw, ImageFont
@@ -903,7 +903,7 @@ class BotonDescargaModerno(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.42')
+        self.title('Juegos Torrent 2.7.49')
         self._startup_split_job = None
         self._startup_split_done = False
         self.bind('<Map>', self._on_window_mapped, add='+')
@@ -967,6 +967,8 @@ class App(tk.Tk):
                      font=('Segoe UI', 24, 'bold')).pack(side='left')
         BotonElegante(top, 'Actualizar catálogo', self.load_catalog,
                       width=157, height=30).pack(side='right')
+        BotonElegante(top, '📖 GUÍAS', self.open_help_center,
+                      width=112, height=30).pack(side='right', padx=(0, 10))
         # Buscador con contorno redondeado, a juego con los selectores.
         search_area = tk.Frame(top, bg=BG, width=290, height=30)
         search_area.pack(side='right', padx=12)
@@ -1070,7 +1072,13 @@ class App(tk.Tk):
         self.welcome = tk.Frame(right, bg=PANEL, bd=0)
         self.welcome_photo = None
         self.welcome_banner_original = None
-        self.welcome_png_path = ASSETS / 'bienvenida_flyer.png'
+        # Elegir al azar una bienvenida por inicio (no cambia durante la sesión).
+        # Acepta bienvenida_flyer.png, bienvenida_flyer_2.png, _3.png, etc.
+        welcome_candidates = sorted(
+            path for path in ASSETS.glob('bienvenida_flyer*.png') if path.is_file()
+        )
+        self.welcome_png_path = (random.choice(welcome_candidates)
+                                 if welcome_candidates else ASSETS / 'bienvenida_flyer.png')
         if Image is not None and ImageTk is not None and self.welcome_png_path.is_file():
             try:
                 self.welcome_banner_original = Image.open(self.welcome_png_path).convert('RGB')
@@ -1218,20 +1226,34 @@ class App(tk.Tk):
         self.extras_frame.pack(fill='x', padx=8, pady=(0, 20))
 
         self.text_heading = tk.Label(self.instructions_tab, text='Seleccioná un juego y sus instrucciones.',
-                                     fg=ACCENT, bg=PANEL, anchor='w', justify='left', wraplength=280,
+                                     fg=ACCENT, bg=PANEL, anchor='w', justify='left',
                                      font=('Segoe UI', 11, 'bold'))
         self.text_heading.pack(fill='x', padx=8, pady=(12, 8))
+        # El encabezado ocupa siempre una sola línea; el visor conserva el título completo.
+        self._full_text_heading = 'Seleccioná un juego y sus instrucciones.'
+        self.instructions_tab.bind('<Configure>', self._fit_text_heading, add='+')
+
         text_container = tk.Frame(self.instructions_tab, bg=PANEL)
         text_container.pack(fill='both', expand=True, padx=8, pady=(0, 10))
         self.text_view = tk.Text(text_container, wrap='word', height=15, bg=BG, fg=FG,
                                  insertbackground=FG, relief='flat', padx=10, pady=10,
-                                 font=('Consolas', 10), state='disabled')
+                                 font=('Segoe UI', 11), spacing1=3, spacing3=4, state='disabled')
         text_scroll = ttk.Scrollbar(text_container, orient='vertical', command=self.text_view.yview)
         self.text_view.configure(yscrollcommand=text_scroll.set)
         text_scroll.pack(side='right', fill='y')
         self.text_view.pack(side='left', fill='both', expand=True)
-        tk.Button(self.instructions_tab, text='Copiar texto', command=self.copy_text,
-                  bg=CARD, fg=FG, relief='flat', pady=7).pack(fill='x', padx=8, pady=(0, 10))
+        text_actions = tk.Frame(self.instructions_tab, bg=PANEL)
+        text_actions.pack(fill='x', padx=8, pady=(0, 10))
+        tk.Button(text_actions, text='VER EN GRANDE  ↗', command=self.open_text_viewer,
+                  bg=ACCENT, fg=BG, activebackground='#7de9a7',
+                  activeforeground=BG, relief='flat', bd=0, cursor='hand2',
+                  font=('Segoe UI', 10, 'bold'), pady=9).pack(
+                      side='left', fill='x', expand=True, padx=(0, 5))
+        tk.Button(text_actions, text='COPIAR TEXTO', command=self.copy_text,
+                  bg=CARD, fg=FG, activebackground='#34445a',
+                  activeforeground=FG, relief='flat', bd=0, cursor='hand2',
+                  font=('Segoe UI', 10, 'bold'), pady=9).pack(
+                      side='left', fill='x', expand=True, padx=(5, 0))
 
         # Barra inferior persistente: estado a la izquierda, créditos discretos a la derecha.
         status_bar = tk.Frame(self, bg=BG)
@@ -2459,13 +2481,336 @@ class App(tk.Tk):
             return 'Ver enlaces de descarga'
         return 'Descargar complemento' if complement else 'Descargar juego'
 
+    def _fit_text_heading(self, event=None):
+        if not hasattr(self, 'text_heading'):
+            return
+        title = getattr(self, '_full_text_heading', self.text_heading.cget('text'))
+        width = max(80, self.instructions_tab.winfo_width() - 32)
+        font = tkfont.Font(family='Segoe UI', size=11, weight='bold')
+        # Priorizar la línea única y la legibilidad.
+        for size in range(11, 8, -1):
+            font.configure(size=size)
+            if font.measure(title) <= width:
+                self.text_heading.config(text=title, font=('Segoe UI', size, 'bold'))
+                return
+        font.configure(size=9)
+        shortened = title
+        while shortened and font.measure(shortened + '…') > width:
+            shortened = shortened[:-1]
+        self.text_heading.config(text=shortened.rstrip() + '…',
+                                 font=('Segoe UI', 9, 'bold'))
+
     def show_text(self, title, content):
-        self.text_heading.config(text=title)
+        self._full_text_heading = title
+        self._fit_text_heading()
         self.text_view.config(state='normal')
         self.text_view.delete('1.0', 'end')
         self.text_view.insert('1.0', content)
         self.text_view.config(state='disabled')
         self.text_view.yview_moveto(0)
+
+    def open_help_center(self, parent=None):
+        """Centro de ayuda local, con índice JSON y documentos externos opcionales."""
+        directory = BASE / 'tutoriales'
+        index_path = directory / 'guias.json'
+        try:
+            with index_path.open('r', encoding='utf-8-sig') as handle:
+                index = json.load(handle)
+            if not isinstance(index, list):
+                raise ValueError('guias.json debe contener una lista de guías.')
+            entries = [item for item in index
+                       if isinstance(item, dict) and item.get('titulo')]
+        except FileNotFoundError:
+            entries = []
+        except (OSError, ValueError, UnicodeError) as exc:
+            messagebox.showerror('Centro de ayuda',
+                                 f'No se pudo leer tutoriales/guias.json:\n{exc}')
+            return
+
+        window = tk.Toplevel(self)
+        window.title('Juegos Torrent | Centro de ayuda')
+        window.configure(bg=BG)
+        window.geometry(f'1040x{min(850, max(550, window.winfo_screenheight() - 110))}')
+        window.minsize(700, 430)
+        window.transient(parent if parent is not None and parent.winfo_exists() else self)
+        window.bind('<Escape>', lambda _: window.destroy())
+
+        header = tk.Frame(window, bg=PANEL, padx=20, pady=15)
+        header.pack(fill='x')
+        tk.Label(header, text='CENTRO DE AYUDA  ·  GUÍAS Y TUTORIALES',
+                 bg=PANEL, fg=ACCENT, font=('Segoe UI', 15, 'bold')).pack(anchor='w')
+        tk.Label(header, text='Descargas, instalación, lanzadores y soluciones frecuentes',
+                 bg=PANEL, fg=MUTED, font=('Segoe UI', 10)).pack(anchor='w', pady=(4, 0))
+
+        main = tk.Frame(window, bg=BG)
+        main.pack(fill='both', expand=True, padx=16, pady=14)
+        sidebar = tk.Frame(main, bg=PANEL, width=280)
+        sidebar.pack(side='left', fill='y', padx=(0, 12))
+        sidebar.pack_propagate(False)
+        tk.Label(sidebar, text='CATEGORÍAS', bg=PANEL, fg=ACCENT,
+                 font=('Segoe UI', 10, 'bold')).pack(anchor='w', padx=14, pady=(15, 8))
+        categories = ['Todas las guías'] + list(dict.fromkeys(
+            str(item.get('categoria') or 'General') for item in entries))
+        cat_list = tk.Listbox(sidebar, bg=PANEL, fg=FG, selectbackground='#20583f',
+                              selectforeground=FG, relief='flat', bd=0,
+                              highlightthickness=0, font=('Segoe UI', 11),
+                              exportselection=False, activestyle='none')
+        cat_list.pack(fill='x', padx=9, pady=(0, 16))
+        for category in categories:
+            cat_list.insert('end', category)
+
+        right = tk.Frame(main, bg=PANEL)
+        right.pack(side='left', fill='both', expand=True)
+        tk.Label(right, text='TUTORIALES DISPONIBLES', bg=PANEL, fg=ACCENT,
+                 font=('Segoe UI', 10, 'bold')).pack(anchor='w', padx=18, pady=(16, 7))
+        guide_list = tk.Listbox(right, bg=CARD, fg=FG, selectbackground='#20583f',
+                                selectforeground=FG, relief='flat', bd=0,
+                                highlightthickness=0, font=('Segoe UI', 11),
+                                exportselection=False, activestyle='none', height=7)
+        guide_list.pack(fill='x', padx=18, pady=(0, 12))
+        description = tk.Text(right, bg='#ffffff', fg='#1c2530', wrap='word', relief='flat',
+                              bd=0, padx=16, pady=14, font=('Segoe UI', 11),
+                              spacing1=3, spacing3=6, state='disabled',
+                              selectbackground='#b9d9c6', selectforeground='#17251e')
+        actions = tk.Frame(right, bg=PANEL)
+        actions.pack(side='bottom', fill='x', padx=18, pady=(4, 16))
+        description.pack(fill='both', expand=True, padx=18, pady=(0, 12))
+        visible = []
+        current = [None]
+
+        def set_description(value, markdown=False):
+            description.configure(state='normal')
+            description.delete('1.0', 'end')
+            description.tag_configure('bold', font=('Segoe UI', 11, 'bold'))
+            description.tag_configure('italic', font=('Segoe UI', 11, 'italic'))
+            description.tag_configure('bolditalic', font=('Segoe UI', 11, 'bold italic'))
+            description.tag_configure('underline', underline=True)
+            description.tag_configure('code', font=('Consolas', 10),
+                                      background='#eef1f3', foreground='#263a4b')
+            description.tag_configure('link', foreground='#1266ae', underline=True)
+            description.tag_configure('heading', font=('Segoe UI', 16, 'bold'),
+                                      foreground='#16643e', spacing1=12, spacing3=9)
+            description.tag_configure('subheading', font=('Segoe UI', 13, 'bold'),
+                                      foreground='#16643e', spacing1=9, spacing3=6)
+            description.tag_configure('rule', foreground='#a4b1ad')
+            if markdown:
+                # Renderizar Markdown habitual sin dependencias externas.
+                inline = re.compile(
+                    r'(\[([^\]]+)\]\((https?://[^)]+)\)'  # enlaces
+                    r'|<u>.*?</u>'                         # subrayado
+                    r'|\*\*\*.+?\*\*\*'              # negrita+cursiva
+                    r'|\*\*.+?\*\*|__.+?__'              # negrita
+                    r'|(?<!\*)\*[^*\n]+?\*(?!\*)'       # cursiva
+                    r'|(?<!_)_[^_\n]+?_(?!_)'             # cursiva
+                    r'|`[^`\n]+`)', re.I)
+                for line in value.splitlines(keepends=True):
+                    # Dos espacios al final significan salto de línea en Markdown.
+                    line = line.rstrip(' ') if not line.endswith('\n') else line.rstrip(' \n') + '\n'
+                    stripped = line.strip()
+                    if re.fullmatch(r'(?:-{3,}|\*{3,}|_{3,})', stripped):
+                        description.insert('end', '────────────────────────\n', ('rule',))
+                        continue
+                    heading = re.match(r'^\s*(#{1,6})\s+(.*)', line)
+                    if heading:
+                        level = len(heading.group(1))
+                        line = heading.group(2)
+                        if not line.endswith('\n'):
+                            line += '\n'
+                        heading_tag = 'heading' if level == 1 else 'subheading'
+                    else:
+                        heading_tag = None
+                        bullet = re.match(r'^(\s*)[-*+]\s+(.*)', line)
+                        ordered = re.match(r'^(\s*)(\d+)\.\s+(.*)', line)
+                        if bullet:
+                            line = bullet.group(1) + '• ' + bullet.group(2)
+                        elif ordered:
+                            line = ordered.group(1) + ordered.group(2) + '. ' + ordered.group(3)
+                    pos = 0
+                    for match in inline.finditer(line):
+                        if match.start() > pos:
+                            description.insert('end', line[pos:match.start()],
+                                               (heading_tag,) if heading_tag else ())
+                        token = match.group(0)
+                        if match.group(2) is not None:
+                            description.insert('end', match.group(2), ('link',))
+                        elif token.lower().startswith('<u>'):
+                            description.insert('end', token[3:-4], ('underline',))
+                        elif token.startswith('***'):
+                            description.insert('end', token[3:-3], ('bolditalic',))
+                        elif token.startswith('**') or token.startswith('__'):
+                            description.insert('end', token[2:-2], ('bold',))
+                        elif token.startswith('`'):
+                            description.insert('end', token[1:-1], ('code',))
+                        else:
+                            description.insert('end', token[1:-1], ('italic',))
+                        pos = match.end()
+                    if pos < len(line):
+                        description.insert('end', line[pos:],
+                                           (heading_tag,) if heading_tag else ())
+            else:
+                description.insert('1.0', value)
+            description.configure(state='disabled')
+            description.yview_moveto(0)
+
+        def select_guide(_event=None):
+            indices = guide_list.curselection()
+            current[0] = visible[indices[0]] if indices else None
+            entry = current[0]
+            if entry is None:
+                set_description('Seleccioná una guía para ver su contenido.')
+                return
+            text = str(entry.get('descripcion') or '')
+            filename = entry.get('archivo')
+            is_markdown = False
+            if filename:
+                relative = Path(str(filename))
+                path = (directory / relative).resolve()
+                # Los archivos siempre deben permanecer dentro de tutoriales.
+                if not path.is_relative_to(directory.resolve()):
+                    text += '\n\nArchivo no permitido: ruta fuera de tutoriales.'
+                elif path.suffix.lower() in ('.txt', '.md') and path.is_file():
+                    try:
+                        text += ('\n\n' if text else '') + path.read_text(encoding='utf-8-sig')
+                        is_markdown = path.suffix.lower() == '.md'
+                    except (OSError, UnicodeError) as exc:
+                        text += f'\n\nNo se pudo leer el archivo: {exc}'
+                elif not path.is_file():
+                    text += '\n\nEl archivo todavía no está disponible.'
+                else:
+                    text += '\n\nPresioná ABRIR ARCHIVO para consultar el documento.'
+            set_description(text or 'Esta guía todavía no tiene contenido.',
+                            markdown=is_markdown)
+
+        def refresh(_event=None):
+            chosen = categories[cat_list.curselection()[0]] if cat_list.curselection() else categories[0]
+            visible[:] = [item for item in entries if chosen == 'Todas las guías'
+                          or str(item.get('categoria') or 'General') == chosen]
+            guide_list.delete(0, 'end')
+            for entry in visible:
+                guide_list.insert('end', entry['titulo'])
+            if visible:
+                guide_list.selection_set(0)
+            select_guide()
+
+        def open_document():
+            entry = current[0]
+            if not entry or not entry.get('archivo'):
+                messagebox.showinfo('Centro de ayuda', 'Esta guía no tiene un archivo asociado.',
+                                    parent=window)
+                return
+            path = (directory / str(entry['archivo'])).resolve()
+            if not path.is_relative_to(directory.resolve()) or path.suffix.lower() not in ('.pdf', '.txt', '.md'):
+                messagebox.showwarning('Centro de ayuda', 'Tipo de archivo o ruta no permitidos.',
+                                       parent=window)
+                return
+            if not path.is_file():
+                messagebox.showwarning('Centro de ayuda', 'Todavía no existe ese archivo.',
+                                       parent=window)
+                return
+            try:
+                if os.name == 'nt':
+                    os.startfile(str(path))
+                else:
+                    webbrowser.open(path.as_uri())
+            except (OSError, ValueError) as exc:
+                messagebox.showerror('Centro de ayuda', str(exc), parent=window)
+
+        tk.Button(actions, text='📄 ABRIR PDF / ARCHIVO', command=open_document,
+                  bg='#20583f', fg=FG, activebackground='#307e59',
+                  activeforeground=FG, relief='flat', bd=0, cursor='hand2',
+                  font=('Segoe UI', 10, 'bold'), padx=15, pady=9).pack(side='left')
+        tk.Button(actions, text='CERRAR', command=window.destroy,
+                  bg=CARD, fg=FG, relief='flat', bd=0, cursor='hand2',
+                  font=('Segoe UI', 10, 'bold'), padx=15, pady=9).pack(side='right')
+        cat_list.bind('<<ListboxSelect>>', refresh)
+        guide_list.bind('<<ListboxSelect>>', select_guide)
+        guide_list.bind('<Double-Button-1>', lambda _e: open_document())
+        if entries:
+            cat_list.selection_set(0)
+            refresh()
+        else:
+            set_description('Todavía no hay tutoriales. Agregá guías en tutoriales/guias.json.')
+        window.focus_set()
+
+    def open_text_viewer(self):
+        """Visor independiente y cómodo para instrucciones y enlaces."""
+        title = getattr(self, '_full_text_heading', self.text_heading.cget('text'))
+        content = self.text_view.get('1.0', 'end-1c')
+        viewer = tk.Toplevel(self)
+        viewer.title('Juegos Torrent | ' + title)
+        viewer.configure(bg=BG)
+        viewer.geometry(f'900x{min(850, max(550, viewer.winfo_screenheight() - 110))}')
+        viewer.minsize(540, 360)
+        viewer.transient(self)
+
+        header = tk.Frame(viewer, bg=PANEL, padx=22, pady=16)
+        header.pack(fill='x')
+        tk.Label(header, text=title, bg=PANEL, fg=ACCENT,
+                 font=('Segoe UI', 15, 'bold'), anchor='w',
+                 wraplength=790, justify='left').pack(fill='x')
+
+        toolbar = tk.Frame(viewer, bg=BG, padx=22, pady=12)
+        toolbar.pack(fill='x')
+        size = [12]
+        size_label = tk.Label(toolbar, text='12 pt', bg=BG, fg=MUTED,
+                              font=('Segoe UI', 10))
+        def zoom(delta):
+            size[0] = max(9, min(24, size[0] + delta))
+            reader.configure(font=('Segoe UI', size[0]))
+            size_label.configure(text=f'{size[0]} pt')
+
+        tk.Label(toolbar, text='Tamaño de letra', bg=BG, fg=MUTED,
+                 font=('Segoe UI', 10)).pack(side='left', padx=(0, 12))
+        for caption, delta in [('A−', -1), ('A+', 1)]:
+            tk.Button(toolbar, text=caption, command=lambda d=delta: zoom(d),
+                      bg=CARD, fg=FG, activebackground='#34445a',
+                      activeforeground=FG, relief='flat', bd=0,
+                      cursor='hand2', padx=12, pady=5,
+                      font=('Segoe UI', 11, 'bold')).pack(side='left', padx=(0, 6))
+        size_label.pack(side='left', padx=(4, 0))
+
+        def copy_viewer():
+            if content.strip():
+                viewer.clipboard_clear()
+                viewer.clipboard_append(content)
+                self.status.config(text='Texto copiado al portapapeles.')
+
+        tk.Button(toolbar, text='📖 Ver guías', command=lambda: self.open_help_center(viewer),
+                  bg='#20583f', fg=FG, activebackground='#307e59',
+                  activeforeground=FG, relief='flat', bd=0, cursor='hand2',
+                  font=('Segoe UI', 10, 'bold'), padx=14, pady=7).pack(side='right', padx=(0, 8))
+
+        tk.Button(toolbar, text='Copiar todo', command=copy_viewer,
+                  bg=CARD, fg=FG, activebackground='#34445a',
+                  activeforeground=FG, relief='flat', bd=0, cursor='hand2',
+                  font=('Segoe UI', 10, 'bold'), padx=14, pady=7).pack(side='right')
+
+        body = tk.Frame(viewer, bg=BG, padx=22, pady=0)
+        body.pack(fill='both', expand=True)
+        reader = tk.Text(body, wrap='word', bg='#ffffff', fg='#1c2530',
+                         selectbackground='#b9d9c6', selectforeground='#17251e',
+                         relief='flat', bd=0, padx=22, pady=20,
+                         font=('Segoe UI', size[0]), spacing1=4,
+                         spacing2=2, spacing3=7, cursor='xterm')
+        scroll = ttk.Scrollbar(body, orient='vertical', command=reader.yview)
+        reader.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y')
+        reader.pack(side='left', fill='both', expand=True)
+        reader.insert('1.0', content)
+        reader.configure(state='disabled')
+        reader.bind('<Control-plus>', lambda e: (zoom(1), 'break')[1])
+        reader.bind('<Control-minus>', lambda e: (zoom(-1), 'break')[1])
+        viewer.bind('<Escape>', lambda e: viewer.destroy())
+        reader.focus_set()
+
+        footer = tk.Frame(viewer, bg=BG, padx=22, pady=12)
+        footer.pack(fill='x')
+        tk.Label(footer, text='Ctrl+C para copiar selección  ·  Esc para cerrar',
+                 bg=BG, fg=MUTED, font=('Segoe UI', 9)).pack(side='left')
+        tk.Button(footer, text='Cerrar', command=viewer.destroy,
+                  bg=CARD, fg=FG, activebackground='#34445a',
+                  activeforeground=FG, relief='flat', bd=0,
+                  cursor='hand2', padx=18, pady=7).pack(side='right')
 
     def copy_text(self):
         content = self.text_view.get('1.0', 'end-1c')

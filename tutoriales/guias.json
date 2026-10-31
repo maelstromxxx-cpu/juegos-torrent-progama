@@ -1,0 +1,38 @@
+[
+  {
+    "titulo": "Primeros pasos: descargas e instalación",
+    "categoria": "Primeros pasos",
+    "descripcion": "Introducción general al proceso de descarga e instalación. Adaptá estos pasos a las instrucciones de cada juego.",
+    "archivo": "primeros_pasos.txt"
+  },
+  {
+    "titulo": "Instalar actualizaciones y complementos",
+    "categoria": "Instalación",
+    "descripcion": "Guía inicial para consultar el orden de instalación de updates y complementos.",
+    "archivo": "updates.txt"
+  },
+  {
+    "titulo": "Lanzadores: configuración y uso",
+    "categoria": "Lanzadores",
+    "descripcion": "Espacio reservado para tus tutoriales específicos de lanzadores.",
+    "archivo": "lanzadores.txt"
+  },
+  {
+    "titulo": "Guía Hypervisor Denuvo",
+    "categoria": "Hypervisor",
+    "descripcion": "Que es Hypervisor y cómo funciona.",
+    "archivo": "hypervisor.md"
+  },
+  {
+    "titulo": "Guía Hypervisor Denuvo en PDF",
+    "categoria": "Hypervisor",
+    "descripcion": "Que es Hypervisor y cómo funciona.",
+    "archivo": "hypervisor.pdf"
+  },
+  {
+    "titulo": "Problemas frecuentes",
+    "categoria": "Solución de problemas",
+    "descripcion": "Consejos generales y enlaces a guías específicas.",
+    "archivo": "problemas.txt"
+  }
+]
