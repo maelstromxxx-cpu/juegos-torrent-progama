@@ -59,6 +59,62 @@ def clean_html(value):
     text = re.sub(r' *\n *', '\n', text)
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
+def extraer_updates_fitgirl(contenido_html):
+    """Extrae enlaces de updates sin exigir extensión en el texto visible.
+
+    El HTML puede mostrar títulos como 'Update 1.02', enlaces FileCrypt,
+    mirrors o nombres de archivos. Se ignoran referencias a las fuentes.
+    """
+    encabezado = re.search(
+        r'<h[2-4]\b[^>]*>\s*Game\s+Updates\s*(?:&#8211;|&#x2013;|&ndash;|–|-)\s*Direct\s+Links\s+only\s*</h[2-4]>',
+        contenido_html, re.I)
+    if not encabezado:
+        raise ValueError('No se encontró la sección Game Updates – Direct Links only.')
+    siguiente = re.search(r'<h[2-4]\b', contenido_html[encabezado.end():], re.I)
+    segmento = contenido_html[encabezado.end():encabezado.end() + siguiente.start()] if siguiente else contenido_html[encabezado.end():]
+    resultados, vistos = [], set()
+    items = re.findall(r'<li\b[^>]*>(.*?)(?=<li\b|</ol>|</ul>|$)', segmento, re.I | re.S)
+    for item in items:
+        # Algunos enlaces son solamente referencias '(Source: ElAmigos)'.
+        item = re.split(r'\(\s*Source\s*:', item, maxsplit=1, flags=re.I)[0]
+        enlaces = re.findall(r'<a\b[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>', item, re.I | re.S)
+        for direccion, etiqueta in enlaces:
+            url = html.unescape(direccion).strip()
+            nombre = clean_html(etiqueta).strip()
+            destino = urllib.parse.urlparse(url)
+            if destino.scheme not in ('http', 'https') or not destino.netloc or not nombre:
+                continue
+            if re.search(r'^(?:source|scene|elamigos|website|homepage)$', nombre, re.I):
+                continue
+            archivo = bool(re.search(r'\.(?:rar|zip|7z|exe|iso|bin|001|torrent)(?:\b|$)', nombre, re.I))
+            actualizacion = bool(re.search(r'\b(?:update|updates|patch|hotfix|fix|dlc)\b', nombre, re.I))
+            # Los enlaces de contenedores se admiten aunque el título no tenga extensión.
+            contenedor = destino.hostname and destino.hostname.lower() in ('filecrypt.cc', 'www.filecrypt.cc')
+            if not (archivo or actualizacion or contenedor):
+                continue
+            if url not in vistos:
+                vistos.add(url)
+                resultados.append((nombre, url))
+            break
+    if not resultados:
+        raise ValueError('La sección existe, pero no contiene enlaces de actualizaciones reconocibles. Probá con HTML guardado para revisar el formato.')
+    return resultados
+
+def extraer_titulo_fitgirl(contenido_html):
+    """Obtiene el título de la entrada, sin los datos técnicos del repack."""
+    match = re.search(r'<h1\b[^>]*class=["\'][^"\']*\bentry-title\b[^"\']*["\'][^>]*>(.*?)</h1>', contenido_html, re.I | re.S)
+    if match:
+        titulo = clean_html(match.group(1))
+    else:
+        match = re.search(r'<meta\b[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)', contenido_html, re.I | re.S)
+        titulo = html.unescape(match.group(1)) if match else ''
+    titulo = re.sub(r'\s*[-–—]\s*FitGirl Repacks\s*$', '', titulo, flags=re.I)
+    # El corte se hace solamente ante el inicio de datos técnicos,
+    # para conservar subtítulos con guiones en el nombre del juego.
+    titulo = re.split(r'\s+[-–—]\s+(?=(?:v\s*\d|build\s*\d|update\s*\d|all\s+dlcs|repack\b|\d{4}\s*\+))', titulo, maxsplit=1, flags=re.I)[0]
+    return titulo.strip()
+
+
 def fetch_json(url, params):
     query = urllib.parse.urlencode(params)
     req = urllib.request.Request(url + '?' + query, headers={
@@ -279,7 +335,7 @@ def to_data(info, tamano='', repacker='FitGirl', review_percent=None):
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Generador de TXT/MD, portadas, capturas y torrents - v13.5.9 SteamGridDB')
+        self.title('Generador de TXT/MD, portadas, capturas y torrents - v13.5.12 FitGirl')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -336,6 +392,18 @@ class Generador(tk.Tk):
             ruta = tk.StringVar(value=self.configuracion.get(seccion, ''))
             self.selector_carpeta(panel, ruta, 5)
             self.paneles.append((seccion, caja, ruta))
+        # Herramienta de extracción para el panel UPDATES.
+        panel_updates = principal.grid_slaves(row=0, column=3)[0]
+        ttk.Label(panel_updates, text='URL de la publicación de FitGirl:').grid(row=6, column=0, sticky='w', pady=(7, 0))
+        self.url_updates = tk.StringVar()
+        campo_url = ttk.Entry(panel_updates, textvariable=self.url_updates)
+        campo_url.grid(row=7, column=0, sticky='ew', pady=3)
+        self.menu_contextual(campo_url)
+        fila_updates = ttk.Frame(panel_updates)
+        fila_updates.grid(row=8, column=0, sticky='ew', pady=(2, 0))
+        self.boton_extraer_updates = ttk.Button(fila_updates, text='Extraer updates desde URL', command=self.extraer_updates_url)
+        self.boton_extraer_updates.pack(side='left', padx=(0, 5))
+        ttk.Button(fila_updates, text='Probar con HTML guardado...', command=self.extraer_updates_archivo).pack(side='left')
         principal.rowconfigure(0, weight=1)
 
         fotos = ttk.LabelFrame(principal, text='  PORTADA  ', padding=10)
@@ -1162,6 +1230,71 @@ class Generador(tk.Tk):
             etiqueta.image = foto
         except Exception:
             etiqueta.configure(image='', text='No se pudo mostrar la miniatura.')
+
+    def extraer_updates_url(self):
+        url = self.url_updates.get().strip()
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != 'https' or parsed.hostname not in ('fitgirl-repacks.site', 'www.fitgirl-repacks.site'):
+            messagebox.showwarning('URL incorrecta', 'Pegá una URL HTTPS de fitgirl-repacks.site.')
+            return
+        self.boton_extraer_updates.configure(state='disabled')
+        def trabajo():
+            try:
+                peticion = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.9'})
+                with urllib.request.urlopen(peticion, timeout=25) as respuesta:
+                    datos = respuesta.read(3 * 1024 * 1024 + 1)
+                    if len(datos) > 3 * 1024 * 1024:
+                        raise ValueError('La página supera los 3 MB.')
+                    charset = respuesta.headers.get_content_charset() or 'utf-8'
+                pagina = datos.decode(charset, errors='replace')
+                resultados = extraer_updates_fitgirl(pagina)
+                titulo_juego = extraer_titulo_fitgirl(pagina)
+                self.after(0, lambda: self.previsualizar_updates(resultados, titulo_juego))
+            except Exception as exc:
+                error = str(exc)
+                self.after(0, lambda: messagebox.showerror('No se pudieron extraer updates', error + '\n\nPodés probar con HTML guardado (Ctrl+U).'))
+            finally:
+                self.after(0, lambda: self.boton_extraer_updates.configure(state='normal'))
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    def extraer_updates_archivo(self):
+        archivo = filedialog.askopenfilename(title='Seleccionar HTML de FitGirl', filetypes=[('Archivos HTML', '*.html *.htm'), ('Todos', '*.*')])
+        if not archivo:
+            return
+        try:
+            contenido = Path(archivo).read_text(encoding='utf-8-sig', errors='replace')
+            self.previsualizar_updates(extraer_updates_fitgirl(contenido), extraer_titulo_fitgirl(contenido))
+        except Exception as exc:
+            messagebox.showerror('Error al leer HTML', str(exc))
+
+    def previsualizar_updates(self, resultados, titulo_juego=''):
+        ventana = tk.Toplevel(self)
+        ventana.title('Kalaka’s Soft · Vista previa de updates')
+        ventana.geometry('850x600')
+        ventana.transient(self)
+        ttk.Label(ventana, text=f'Se encontraron {len(resultados)} actualizaciones. Revisá el texto antes de incorporarlo.', padding=10).pack(anchor='w')
+        if titulo_juego:
+            ttk.Label(ventana, text='Título detectado: ' + titulo_juego, padding=(10, 0, 10, 8)).pack(anchor='w')
+        contenido = '\n\n'.join(f'{nombre}\n`{url}`' for nombre, url in resultados)
+        vista = tk.Text(ventana, wrap='none', font=('Consolas', 10))
+        vista.insert('1.0', contenido)
+        vista.pack(fill='both', expand=True, padx=10, pady=5)
+        botones = ttk.Frame(ventana, padding=10)
+        botones.pack(fill='x')
+        def incorporar():
+            caja = next(caja for nombre, caja, _ in self.paneles if nombre == 'UPDATES')
+            anterior = caja.get('1.0', 'end-1c').strip()
+            if anterior and not messagebox.askyesno('Reemplazar Updates', 'El cuadro Updates ya contiene texto. ¿Querés reemplazarlo?', parent=ventana):
+                return
+            caja.delete('1.0', 'end')
+            caja.insert('1.0', vista.get('1.0', 'end-1c'))
+            if titulo_juego:
+                actual = self.nombre_juego.get().strip()
+                if not actual or actual == titulo_juego or messagebox.askyesno('Nombre del juego', f'Ya existe un nombre: {actual}\n\n¿Querés reemplazarlo por {titulo_juego}?', parent=ventana):
+                    self.nombre_juego.set(titulo_juego)
+            ventana.destroy()
+        ttk.Button(botones, text='Incorporar al cuadro UPDATES', command=incorporar).pack(side='left')
+        ttk.Button(botones, text='Cancelar', command=ventana.destroy).pack(side='right')
 
     def guardar_configuracion(self):
         datos = {nombre: ruta.get().strip() for nombre, _, ruta in self.paneles}
