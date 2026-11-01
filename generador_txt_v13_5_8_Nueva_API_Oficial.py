@@ -3,6 +3,13 @@ import re
 import shutil
 import os
 import tempfile
+import subprocess
+import shutil as shutil_browser
+import threading
+import urllib.parse
+import urllib.request
+import html
+from html.parser import HTMLParser
 import tkinter as tk
 from pathlib import Path
 from datetime import date
@@ -16,13 +23,263 @@ except ImportError:
 
 CONFIG = Path.home() / '.generador_txt_config.json'
 SECCIONES = ('DATOS', 'SINOPSIS', 'INSTRUCCIONES', 'UPDATES')
-PLANTILLA_DATOS = 'Año:\nGénero:\nTamaño:\nModo:\nIdioma:\nFecha de incorporación: {fecha}\n'
+PLANTILLA_DATOS = ('Año:\nGénero:\nTamaño:\nModo: Singleplayer\nIdioma: MULTI\n'
+                  'Fecha de incorporación: {fecha}\nPuntuación:\nMetacritic:\nRepacker: FitGirl\n')
+
 FORMATOS = ('.jpg', '.jpeg', '.png', '.webp')
+
+USER_AGENT = 'Mozilla/5.0 (compatible; KalakasSoftSteam/1.0)'
+
+class HTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self.skip = 0
+    def handle_starttag(self, tag, attrs):
+        if tag in ('script', 'style'):
+            self.skip += 1
+        elif not self.skip and tag in ('p', 'br', 'li', 'div', 'h2', 'h3', 'ul'):
+            self.parts.append('\n')
+        if tag == 'li' and not self.skip:
+            self.parts.append('• ')
+    def handle_endtag(self, tag):
+        if tag in ('script', 'style'):
+            self.skip = max(0, self.skip - 1)
+        elif not self.skip and tag in ('p', 'li', 'div', 'h2', 'h3'):
+            self.parts.append('\n')
+    def handle_data(self, data):
+        if not self.skip:
+            self.parts.append(data)
+
+def clean_html(value):
+    parser = HTMLText()
+    parser.feed(value or '')
+    text = html.unescape(''.join(parser.parts)).replace('\xa0', ' ')
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r' *\n *', '\n', text)
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
+
+def fetch_json(url, params):
+    query = urllib.parse.urlencode(params)
+    req = urllib.request.Request(url + '?' + query, headers={
+        'User-Agent': USER_AGENT, 'Accept': 'application/json',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.7'
+    })
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.load(response)
+
+def fetch_bytes(url):
+    if not url.startswith('https://'):
+        raise ValueError('Solo se admiten imágenes HTTPS.')
+    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+    with urllib.request.urlopen(req, timeout=25) as response:
+        data = response.read(15 * 1024 * 1024 + 1)
+        if len(data) > 15 * 1024 * 1024:
+            raise ValueError('La imagen supera el límite de 15 MB.')
+        return data
+
+def find_appid(text):
+    match = re.search(r'(?:store\.steampowered\.com/app/)?(\d{3,12})', text.strip())
+    return int(match.group(1)) if match and (text.strip().isdigit() or 'steampowered.com/app/' in text) else None
+
+def obtener_porcentaje_pagina_steam(appid):
+    """Lee SOLO la fila 'Todas las reseñas' del HTML público de Steam.
+
+    No confunde la fila de reseñas recientes con la histórica. Si Steam
+    bloquea la página o cambia su estructura, devuelve un error diagnosticable.
+    """
+    url = f'https://store.steampowered.com/app/{appid}/?l=english&cc=us'
+    req = urllib.request.Request(url, headers={
+        'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) '
+                       'Chrome/131.0.0.0 Safari/537.36'),
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+    })
+    with urllib.request.urlopen(req, timeout=20) as respuesta:
+        pagina = respuesta.read(3 * 1024 * 1024).decode('utf-8', errors='replace')
+
+    # El identificador review_summary corresponde a 'All Reviews'.
+    # review_summary_recent corresponde a los últimos 30 días y se ignora.
+    fila = re.search(r'<[^>]+\bid=[\"\']review_summary[\"\'][^>]*>', pagina, re.I)
+    if not fila:
+        raise ValueError('La página no contiene la fila de reseñas generales (quizás bloqueo, edad o cambio de HTML).')
+    fragmento = pagina[fila.end():fila.end() + 4500]
+    # El tooltip de Steam suele decir: '92% of the 123 user reviews ... are positive.'
+    for etiqueta in re.findall(r'<[^>]+>', fragmento):
+        if 'data-tooltip-html' not in etiqueta.lower():
+            continue
+        match = re.search(r'data-tooltip-html\s*=\s*([\"\'])(.*?)\1', etiqueta, re.I | re.S)
+        if not match:
+            continue
+        tooltip = html.unescape(match.group(2))
+        porcentaje = re.search(r'(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*%', tooltip)
+        if porcentaje:
+            valor = float(porcentaje.group(1).replace(',', '.'))
+            if 0 <= valor <= 100:
+                return valor, f'Fuente: página pública de Steam, TODAS las reseñas ({valor:g} % positivas).'
+    raise ValueError('Se encontró la fila histórica, pero no su porcentaje de reseñas positivas.')
+
+
+def encontrar_navegador():
+    """Chrome/Edge/Chromium; no requiere instalar paquetes Python."""
+    candidatos = []
+    for nombre in ('msedge', 'chrome', 'chromium', 'chromium-browser', 'google-chrome'):
+        ruta = shutil_browser.which(nombre)
+        if ruta:
+            candidatos.append(ruta)
+    if os.name == 'nt':
+        for variable in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'):
+            raiz = os.environ.get(variable)
+            if raiz:
+                for relativo in ('Microsoft/Edge/Application/msedge.exe',
+                                 'Google/Chrome/Application/chrome.exe'):
+                    candidatos.append(str(Path(raiz) / relativo))
+    return next((ruta for ruta in candidatos if Path(ruta).is_file()), None)
+
+
+def extraer_porcentaje_historico(html_pagina):
+    """Extrae exclusivamente el porcentaje del bloque All Reviews."""
+    # El atributo ID es propio del resumen histórico, no review_summary_recent.
+    patron = re.search(r'<[^>]+\bid=["\']review_summary["\'][^>]*>', html_pagina, re.I)
+    if not patron:
+        raise ValueError('El navegador no entregó el bloque de reseñas generales.')
+    bloque = html_pagina[patron.end():patron.end() + 6000]
+    # El tooltip suele contener "XX% of the ... user reviews ... are positive".
+    for etiqueta in re.findall(r'<[^>]+>', bloque):
+        if 'data-tooltip-html' not in etiqueta.lower():
+            continue
+        match = re.search(r'data-tooltip-html\s*=\s*(["\'])(.*?)\1', etiqueta, re.I | re.S)
+        if match:
+            texto = html.unescape(match.group(2))
+            porcentaje = re.search(r'(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*%', texto)
+            if porcentaje:
+                valor = float(porcentaje.group(1).replace(',', '.'))
+                if 0 <= valor <= 100:
+                    return valor
+    raise ValueError('Se encontró el resumen general, pero no el porcentaje.')
+
+
+def obtener_porcentaje_navegador(appid):
+    """Prueba navegador real en modo sin interfaz; no altera perfil del usuario."""
+    ejecutable = encontrar_navegador()
+    if not ejecutable:
+        raise RuntimeError('No se encontró Chrome, Edge o Chromium instalado.')
+    url = f'https://store.steampowered.com/app/{int(appid)}/?l=english&cc=us'
+    with tempfile.TemporaryDirectory(prefix='kalaka_steam_browser_') as perfil:
+        comando = [ejecutable, '--headless', '--disable-gpu', '--no-first-run',
+                   '--no-default-browser-check', '--disable-extensions',
+                   '--disable-background-networking', '--disable-sync',
+                   '--user-data-dir=' + perfil, '--virtual-time-budget=8000',
+                   '--dump-dom', url]
+        resultado = subprocess.run(comando, capture_output=True, text=True,
+                                  encoding='utf-8', errors='replace', timeout=25,
+                                  creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if not resultado.stdout.strip():
+            raise RuntimeError(f'El navegador no entregó HTML (código {resultado.returncode}).')
+        valor = extraer_porcentaje_historico(resultado.stdout)
+        return valor, f'Fuente: navegador ({Path(ejecutable).name}), TODAS las reseñas ({valor:g} % positivas).'
+
+
+def obtener_valoracion_steam(appid):
+    """Nota histórica (todas las reseñas), usando la nueva Web API de Steam.
+
+    GetAppReviews reemplazó /appreviews en octubre de 2026. El resumen de
+    la primera página incluye total_positive/total_reviews para TODA la
+    vida del juego; el filtro Recent solo ordena los resultados individuales.
+    """
+    problemas = []
+    try:
+        parametros = {
+            'appid': int(appid),
+            'filter': 1,              # Orden reciente, NO limitar a 30 días.
+            'languages': ['all'],     # Reseñas en todos los idiomas.
+            'review_type': 0,         # Todas: positivas y negativas.
+            'purchase_type': 1,       # Compras dentro y fuera de Steam.
+            'num_per_page': 1,        # Solo necesitamos el resumen.
+            'cursor': '*',
+        }
+        datos = fetch_json(
+            'https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/',
+            {'input_json': json.dumps(parametros, separators=(',', ':'))}
+        )
+        respuesta = datos.get('response') or {}
+        resumen = respuesta.get('query_summary') or {}
+        positivos = resumen.get('total_positive')
+        total = resumen.get('total_reviews')
+        if (isinstance(positivos, int) and isinstance(total, int)
+                and total > 0 and 0 <= positivos <= total):
+            porcentaje = round(100 * positivos / total, 1)
+            return porcentaje, (
+                f'Fuente: Steam Web API oficial (GetAppReviews).\n'
+                f'Reseñas GENERALES de todos los tiempos: {positivos:,} '
+                f'positivas / {total:,} totales ({porcentaje:g} %).\n'
+                'No se utilizan las reseñas de los últimos 30 días.'
+            )
+        problemas.append('Steam Web API: sin totales históricos válidos en query_summary.')
+    except Exception as exc:
+        problemas.append(f'Steam Web API: {type(exc).__name__}: {exc}')
+
+    # Respaldo: SteamSpy (puede tener cobertura incompleta o datos estimados).
+    try:
+        datos = fetch_json('https://steamspy.com/api.php', {
+            'request': 'appdetails', 'appid': appid
+        })
+        positivos = datos.get('positive')
+        negativos = datos.get('negative')
+        if (isinstance(positivos, int) and isinstance(negativos, int)
+                and positivos >= 0 and negativos >= 0 and positivos + negativos > 0):
+            total = positivos + negativos
+            porcentaje = round(100 * positivos / total, 1)
+            return porcentaje, (
+                f'Fuente alternativa: SteamSpy (estadísticas acumuladas aproximadas). '
+                f'{positivos:,} positivas / {total:,} reseñas.\n' + '\n'.join(problemas)
+            )
+        problemas.append('SteamSpy: sin estadísticas de reseñas suficientes.')
+    except Exception as exc:
+        problemas.append(f'SteamSpy: {type(exc).__name__}: {exc}')
+    return None, '\n'.join(problemas)
+
+
+def obtener_metacritic(info):
+    """Metacritic es opcional en la ficha de Steam."""
+    dato = info.get('metacritic') or {}
+    nota = dato.get('score') if isinstance(dato, dict) else None
+    return nota if isinstance(nota, int) and 0 <= nota <= 100 else None
+
+
+def to_data(info, tamano='', repacker='FitGirl', review_percent=None):
+    """Construye la ficha sin inventar notas ni el tamaño del repack."""
+    genres = ' / '.join(g.get('description', '').strip() for g in info.get('genres', [])
+                        if g.get('description', '').strip())
+    categories = [x.get('description', '').lower() for x in info.get('categories', [])]
+    single = any('single-player' in x or 'un jugador' in x for x in categories)
+    multi = any('multi-player' in x or 'multijugador' in x or 'co-op' in x or 'cooperativo' in x
+                for x in categories)
+    modo = 'Singleplayer / Multiplayer' if single and multi else ('Multiplayer' if multi else 'Singleplayer')
+    release = info.get('release_date') or {}
+    fecha = release.get('date', '')
+    year = re.search(r'\b(?:19|20)\d{2}\b', fecha)
+    metacritic = obtener_metacritic(info)
+    metacritic = '' if metacritic is None else metacritic
+    puntuacion = ''
+    if isinstance(review_percent, (int, float)) and 0 <= review_percent <= 100:
+        puntuacion = f'{review_percent / 10:.1f}'.replace('.', ',')
+    return (f'Año: {year.group(0) if year else ""}\n'
+            f'Género: {genres}\n'
+            f'Tamaño: {tamano.strip()}\n'
+            f'Modo: {modo}\n'
+            f'Idioma: MULTI\n'
+            f'Fecha de incorporación: {date.today():%d/%m/%Y}\n'
+            f'Puntuación: {puntuacion}\n'
+            f'Metacritic: {metacritic}\n'
+            f'Repacker: {repacker.strip() or "FitGirl"}\n')
+
 
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Generador de TXT, portadas, capturas y torrents - v13.2')
+        self.title('Generador de TXT/MD, portadas, capturas y torrents - v13.5.6 Steam')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -33,6 +290,7 @@ class Generador(tk.Tk):
         self.nombre_juego = tk.StringVar()
         self.paneles = []
         self.imagenes_capturas = []
+        self._steam_temporales = set()
         self.portada = None
         self.redimensionar = tk.BooleanVar(value=True)
         self.previews = []
@@ -133,7 +391,272 @@ class Generador(tk.Tk):
         ttk.Button(acciones, text='GUARDAR TODOS', command=self.guardar).pack(side='left', padx=8, ipadx=30, ipady=7)
         ttk.Button(acciones, text='LIMPIAR TODO', command=self.confirmar_limpieza).pack(side='left', padx=8, ipadx=20, ipady=7)
         ttk.Button(acciones, text='GENERADOR DE ID', command=self.abrir_generador_ids).pack(side='left', padx=8, ipadx=18, ipady=7)
+        ttk.Button(acciones, text='BUSCAR EN STEAM', command=self.abrir_steam).pack(side='left', padx=8, ipadx=18, ipady=7)
         self.protocol('WM_DELETE_WINDOW', self.cerrar)
+
+    def abrir_steam(self):
+        """Buscador opcional. Nunca modifica archivos hasta GUARDAR TODOS."""
+        ventana = tk.Toplevel(self)
+        ventana.title('Kalaka’s Soft · Importar metadatos de Steam')
+        ventana.geometry('980x690')
+        ventana.minsize(720, 500)
+        ventana.transient(self)
+        estado = tk.StringVar(value='Buscá un juego por nombre, AppID o URL de Steam.')
+        busqueda = tk.StringVar(value=self.nombre_juego.get().strip() or 'Far Cry 5')
+        opciones = ttk.Frame(ventana, padding=(10, 3))
+        opciones.pack(fill='x')
+        ttk.Label(opciones, text='Tamaño del repack:').pack(side='left')
+        tamano_steam = tk.StringVar()
+        ttk.Entry(opciones, textvariable=tamano_steam, width=15).pack(side='left', padx=(5, 16))
+        ttk.Label(opciones, text='Repacker:').pack(side='left')
+        repacker_steam = tk.StringVar(value='FitGirl')
+        ttk.Entry(opciones, textvariable=repacker_steam, width=18).pack(side='left', padx=5)
+        ttk.Label(opciones, text='Idioma: MULTI · Fecha: hoy', foreground='#39734c').pack(side='left', padx=12)
+        resultados = []
+        detalles = {'data': None, 'images': [], 'review_percent': None, 'diagnostico': '', 'manual': False}
+        en_curso = {'value': False}
+        cabecera = ttk.Frame(ventana, padding=10)
+        cabecera.pack(fill='x')
+        ttk.Label(cabecera, text='Juego:').pack(side='left')
+        campo = ttk.Entry(cabecera, textvariable=busqueda)
+        campo.pack(side='left', fill='x', expand=True, padx=8)
+        buscar_btn = ttk.Button(cabecera, text='Buscar')
+        buscar_btn.pack(side='left')
+        ttk.Label(ventana, text='Los datos se importan solo cuando vos confirmás. La portada sigue siendo manual.', foreground='#39734c').pack(anchor='w', padx=12)
+        panel = ttk.Panedwindow(ventana, orient='horizontal')
+        panel.pack(fill='both', expand=True, padx=10, pady=8)
+        izquierda = ttk.Frame(panel)
+        derecha = ttk.Frame(panel)
+        panel.add(izquierda, weight=1)
+        panel.add(derecha, weight=3)
+        ttk.Label(izquierda, text='Resultados (doble clic para cargar):').pack(anchor='w')
+        lista = tk.Listbox(izquierda, exportselection=False)
+        lista.pack(fill='both', expand=True, pady=5)
+        cargar_btn = ttk.Button(izquierda, text='Cargar seleccionado')
+        cargar_btn.pack(fill='x')
+        pestanas = ttk.Notebook(derecha)
+        pestanas.pack(fill='both', expand=True)
+        cuadros = {}
+        for nombre in ('DATOS', 'SINOPSIS'):
+            tab = ttk.Frame(pestanas, padding=5)
+            pestanas.add(tab, text=nombre)
+            caja = tk.Text(tab, wrap='word', undo=True, font=('Segoe UI', 10))
+            scroll = ttk.Scrollbar(tab, orient='vertical', command=caja.yview)
+            caja.configure(yscrollcommand=scroll.set)
+            caja.pack(side='left', fill='both', expand=True)
+            scroll.pack(side='right', fill='y')
+            cuadros[nombre] = caja
+        tab_img = ttk.Frame(pestanas, padding=8)
+        pestanas.add(tab_img, text='CAPTURAS')
+        ttk.Label(tab_img, text='Elegí las capturas que quieras agregar al generador (Ctrl + clic).', wraplength=550).pack(anchor='w')
+        lista_img = tk.Listbox(tab_img, selectmode='extended', exportselection=False)
+        lista_img.pack(fill='both', expand=True, pady=6)
+        ttk.Label(tab_img, text='Se descargarán al importar. Luego GUARDAR TODOS las procesa normalmente.', wraplength=550).pack(anchor='w')
+        pie = ttk.Frame(ventana, padding=10)
+        pie.pack(fill='x')
+        actualizar_btn = ttk.Button(pie, text='ACTUALIZAR FICHA', state='disabled')
+        actualizar_btn.pack(side='left', padx=4)
+        importar_btn = ttk.Button(pie, text='IMPORTAR DATOS Y SINOPSIS', state='disabled')
+        importar_btn.pack(side='left', padx=4)
+        fotos_btn = ttk.Button(pie, text='AGREGAR CAPTURAS SELECCIONADAS', state='disabled')
+        fotos_btn.pack(side='left', padx=4)
+        def ver_diagnostico():
+            if not detalles['data']:
+                messagebox.showinfo('Valoraciones', 'Primero cargá un juego.', parent=ventana)
+                return
+            nota = obtener_metacritic(detalles['data'])
+            texto = ('Puntuación (reseñas GENERALES/históricas; Steam Web API, SteamSpy o entrada manual):\n'
+                     + detalles['diagnostico'] + '\n\n'
+                     + 'Metacritic: ' + (str(nota) if nota is not None else
+                       'No incluido en los metadatos de Steam para este juego. Se deja vacío.')
+                     + '\n\nSi no hay valoraciones, podés completarlas manualmente en DATOS.')
+            messagebox.showinfo('Diagnóstico de valoraciones', texto, parent=ventana)
+        ttk.Button(pie, text='VER ESTADO DE NOTAS', command=ver_diagnostico).pack(side='left', padx=4)
+        fila_nota = ttk.Frame(ventana, padding=(12, 2))
+        fila_nota.pack(fill='x')
+        ttk.Label(fila_nota, text='Reseñas GENERALES de Steam (% positivas):').pack(side='left')
+        porcentaje_manual = tk.StringVar()
+        ttk.Entry(fila_nota, textvariable=porcentaje_manual, width=9).pack(side='left', padx=7)
+        def aplicar_nota_historica():
+            if not detalles['data']:
+                messagebox.showinfo('Valoración histórica', 'Primero cargá un juego.', parent=ventana)
+                return
+            texto = porcentaje_manual.get().strip().replace('%', '').replace(',', '.')
+            try:
+                valor = float(texto)
+                if not 0 <= valor <= 100:
+                    raise ValueError()
+            except ValueError:
+                messagebox.showerror('Porcentaje inválido', 'Ingresá un porcentaje entre 0 y 100. Ejemplo: 86 o 86,5.', parent=ventana)
+                return
+            detalles['review_percent'] = valor
+            detalles['manual'] = True
+            detalles['diagnostico'] = (f'Fuente: porcentaje de reseñas GENERALES de Steam ingresado manualmente ({valor:g} %). '
+                                      'No corresponde a reseñas recientes. Nota calculada: '
+                                      f'{valor / 10:.1f}/10.')
+            actualizar_ficha()
+            estado.set(f'Nota histórica aplicada: {valor:g} % positivas = {valor / 10:.1f}/10. '
+                       'Revisá DATOS y luego importá.')
+        ttk.Button(fila_nota, text='APLICAR NOTA HISTÓRICA', command=aplicar_nota_historica).pack(side='left', padx=5)
+        ttk.Label(fila_nota, text='Usar "Todas las reseñas", NO "Recientes".', foreground='#39734c').pack(side='left', padx=8)
+        ttk.Label(ventana, textvariable=estado, wraplength=920).pack(fill='x', padx=12, pady=(0, 8))
+
+        def tarea(func, listo):
+            if en_curso['value']:
+                return
+            en_curso['value'] = True
+            buscar_btn.configure(state='disabled')
+            cargar_btn.configure(state='disabled')
+            fotos_btn.configure(state='disabled')
+            estado.set('Consultando / descargando...')
+            def terminar(resultado=None, error=None):
+                if not ventana.winfo_exists():
+                    return
+                en_curso['value'] = False
+                buscar_btn.configure(state='normal')
+                cargar_btn.configure(state='normal')
+                fotos_btn.configure(state='normal' if detalles['images'] else 'disabled')
+                if error:
+                    estado.set('Error: ' + error)
+                    messagebox.showerror('Steam', error, parent=ventana)
+                else:
+                    listo(resultado)
+            def ejecutar():
+                try:
+                    valor = func()
+                    self.after(0, lambda: terminar(valor))
+                except Exception as exc:
+                    mensaje = str(exc)
+                    self.after(0, lambda: terminar(error=mensaje))
+            threading.Thread(target=ejecutar, daemon=True).start()
+
+        def buscar():
+            texto = busqueda.get().strip()
+            if not texto:
+                return
+            appid = find_appid(texto)
+            if appid:
+                establecer_resultados([{'id': appid, 'name': f'AppID {appid}'}])
+                lista.selection_set(0)
+                cargar()
+                return
+            tarea(lambda: fetch_json('https://store.steampowered.com/api/storesearch/',
+                                     {'term': texto, 'l': 'spanish', 'cc': 'ar'}).get('items', []), establecer_resultados)
+
+        def establecer_resultados(items):
+            resultados[:] = items
+            lista.delete(0, 'end')
+            for item in items:
+                lista.insert('end', f'{item.get("name", "Sin nombre")} [{item.get("id")}]')
+            estado.set(f'{len(items)} resultados. Seleccioná el juego y cargalo.')
+
+        def cargar():
+            seleccion = lista.curselection()
+            if not seleccion or en_curso['value']:
+                return
+            appid = resultados[seleccion[0]]['id']
+            def obtener():
+                respuesta = fetch_json('https://store.steampowered.com/api/appdetails',
+                                      {'appids': appid, 'l': 'spanish', 'cc': 'ar'})
+                registro = respuesta.get(str(appid), {})
+                if not registro.get('success') or not registro.get('data'):
+                    raise ValueError('Steam no devolvió datos para este juego.')
+                info = registro['data']
+                review_percent, diagnostico = obtener_valoracion_steam(appid)
+                return info, review_percent, diagnostico
+            def mostrar(resultado):
+                info, review_percent, diagnostico = resultado
+                detalles['data'] = info
+                detalles['review_percent'] = review_percent
+                detalles['manual'] = False
+                porcentaje_manual.set('')
+                detalles['diagnostico'] = diagnostico
+                for nombre, valor in (('DATOS', to_data(info, tamano_steam.get(), repacker_steam.get(), review_percent)),
+                                      ('SINOPSIS', clean_html(info.get('detailed_description') or info.get('about_the_game') or info.get('short_description') or ''))):
+                    cuadros[nombre].delete('1.0', 'end')
+                    cuadros[nombre].insert('1.0', valor)
+                detalles['images'] = [(f'Captura {i:02}', item['path_full']) for i, item in enumerate(info.get('screenshots', []), 1)
+                                       if isinstance(item.get('path_full'), str) and item['path_full'].startswith('https://')]
+                lista_img.delete(0, 'end')
+                for nombre, url in detalles['images']:
+                    lista_img.insert('end', nombre + ' — ' + url)
+                importar_btn.configure(state='normal')
+                actualizar_btn.configure(state='normal')
+                fotos_btn.configure(state='normal' if detalles['images'] else 'disabled')
+                nota_mc = obtener_metacritic(info)
+                estado.set(f'{info.get("name", "Juego")} · {len(detalles["images"])} capturas · '
+                           f'Reseñas históricas: {review_percent if review_percent is not None else "sin nota"} % · '
+                           f'Metacritic: {nota_mc if nota_mc is not None else "no informado"}.')
+                pestanas.select(0)
+            tarea(obtener, mostrar)
+
+        def importar():
+            info = detalles['data']
+            if not info:
+                return
+            nuevos = {nombre: cuadros[nombre].get('1.0', 'end-1c') for nombre in ('DATOS', 'SINOPSIS')}
+            actuales = {nombre: caja.get('1.0', 'end-1c') for nombre, caja, _ in self.paneles if nombre in nuevos}
+            # Nunca pisar un texto que el usuario ya trabajó sin pedir permiso.
+            if any(actuales[n].strip() and actuales[n].strip() != PLANTILLA_DATOS.format(fecha=date.today().strftime('%d/%m/%Y')).strip() for n in nuevos):
+                if not messagebox.askyesno('Reemplazar textos', 'Ya hay contenido en Datos o Sinopsis. ¿Querés reemplazarlo por lo importado de Steam?', parent=ventana):
+                    return
+            self.nombre_juego.set(info.get('name', self.nombre_juego.get()))
+            for nombre, caja, _ in self.paneles:
+                if nombre in nuevos:
+                    caja.delete('1.0', 'end')
+                    caja.insert('1.0', nuevos[nombre])
+            estado.set('Datos y Sinopsis importados al generador. Podés editarlos antes de guardar.')
+            messagebox.showinfo('Importación lista', 'Datos y Sinopsis copiados al generador. Instrucciones y Updates no se modificaron.', parent=ventana)
+
+        def descargar_capturas():
+            seleccion = lista_img.curselection()
+            if not seleccion:
+                messagebox.showinfo('Capturas', 'Seleccioná una o más capturas.', parent=ventana)
+                return
+            elegidas = [detalles['images'][i] for i in seleccion]
+            def bajar():
+                descargadas = []
+                fallos = []
+                for nombre, url in elegidas:
+                    try:
+                        datos = fetch_bytes(url)
+                        extension = Path(urllib.parse.urlsplit(url).path).suffix.lower()
+                        if extension not in FORMATOS:
+                            extension = '.jpg'
+                        with tempfile.NamedTemporaryFile(prefix='kalaka_steam_', suffix=extension, delete=False) as archivo:
+                            archivo.write(datos)
+                            descargadas.append(Path(archivo.name))
+                    except Exception as exc:
+                        fallos.append(f'{nombre}: {exc}')
+                return descargadas, fallos
+            def listo(resultado):
+                descargadas, fallos = resultado
+                for ruta in descargadas:
+                    self._steam_temporales.add(ruta)
+                    if ruta not in self.imagenes_capturas:
+                        self.imagenes_capturas.append(ruta)
+                self.actualizar_lista()
+                estado.set(f'{len(descargadas)} capturas agregadas al generador. {len(fallos)} errores.')
+                messagebox.showinfo('Capturas', f'Agregadas: {len(descargadas)}\nErrores: {len(fallos)}\nSe procesarán al pulsar GUARDAR TODOS.', parent=ventana)
+            tarea(bajar, listo)
+
+        def actualizar_ficha():
+            if not detalles['data']:
+                return
+            texto = to_data(detalles['data'], tamano_steam.get(), repacker_steam.get(),
+                            detalles['review_percent'])
+            cuadros['DATOS'].delete('1.0', 'end')
+            cuadros['DATOS'].insert('1.0', texto)
+            estado.set('Ficha actualizada con tamaño y repacker. Revisá antes de importar.')
+
+        actualizar_btn.configure(command=actualizar_ficha)
+        buscar_btn.configure(command=buscar)
+        cargar_btn.configure(command=cargar)
+        importar_btn.configure(command=importar)
+        fotos_btn.configure(command=descargar_capturas)
+        lista.bind('<Double-1>', lambda e: cargar())
+        campo.bind('<Return>', lambda e: buscar())
+        ventana.after(100, buscar)
 
     @staticmethod
     def obtener_id_drive(enlace):
@@ -312,7 +835,7 @@ class Generador(tk.Tk):
                 if not id_update:
                     messagebox.showwarning('Falta update', 'Para «Solo update», pegá el enlace del update.', parent=ventana)
                     return
-                lineas = [f'---{nombre}|txt|{id_update}']
+                lineas = [f'---{nombre}|md|{id_update}']
             else:
                 if not id_torrent and not id_instrucciones:
                     messagebox.showwarning('Faltan enlaces', 'Pegá el enlace del torrent o de las instrucciones.', parent=ventana)
@@ -322,7 +845,7 @@ class Generador(tk.Tk):
                     principal += f'|{id_instrucciones}'
                 lineas = [principal]
                 if id_update:
-                    lineas.append(f'---{nombre}|txt|{id_update}')
+                    lineas.append(f'---{nombre}|md|{id_update}')
             texto = '\n'.join(lineas)
             salida.delete('1.0', 'end')
             salida.insert('1.0', texto)
@@ -546,7 +1069,7 @@ class Generador(tk.Tk):
 
     def guardar(self):
         nombre = self.nombre_juego.get().strip()
-        if nombre.lower().endswith('.txt'):
+        if nombre.lower().endswith(('.txt', '.md')):
             nombre = nombre[:-4]
         if (not nombre or nombre in ('.', '..') or re.search(r'[<>:"/\\|?*\x00-\x1f]', nombre)
             or nombre.endswith((' ', '.')) or re.fullmatch(r'(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?', nombre)):
@@ -565,8 +1088,9 @@ class Generador(tk.Tk):
                     return
                 # Instrucciones y updates pueden compartir la misma carpeta de Drive.
                 sufijos = {'INSTRUCCIONES': '_inst', 'UPDATES': '_upd'}
-                archivo_txt = nombre + sufijos.get(seccion, '') + '.txt'
-                trabajos.append((carpeta / archivo_txt, contenido, None))
+                extension = '.md' if seccion in ('INSTRUCCIONES', 'UPDATES') else '.txt'
+                archivo_texto = nombre + sufijos.get(seccion, '') + extension
+                trabajos.append((carpeta / archivo_texto, contenido, None))
         if self.portada:
             destino = Path(self.ruta_portadas.get().strip()) if self.ruta_portadas.get().strip() else None
             if destino is None or not destino.is_dir():
@@ -624,8 +1148,9 @@ class Generador(tk.Tk):
             messagebox.showerror('Error al guardar', f'Se procesaron {guardados} archivo(s) antes del error:\n{error}')
             return
         self.guardar_configuracion()
-        txt = sum(1 for _, contenido, _ in trabajos if contenido is not None)
-        mensaje = f'¡Listo!\n\nTXT: {txt}\nPortada: {1 if self.portada else 0}\nCapturas: {len(self.imagenes_capturas)}\nTorrent copiado: {1 if self.archivo_torrent else 0}'
+        txt = sum(1 for destino, contenido, _ in trabajos if contenido is not None and destino.suffix.lower() == '.txt')
+        md = sum(1 for destino, contenido, _ in trabajos if contenido is not None and destino.suffix.lower() == '.md')
+        mensaje = f'¡Listo!\n\nTXT: {txt}\nMarkdown (.md): {md}\nPortada: {1 if self.portada else 0}\nCapturas: {len(self.imagenes_capturas)}\nTorrent copiado: {1 if self.archivo_torrent else 0}'
         if carpeta_capturas:
             mensaje += f'\n\nCarpeta de capturas: {carpeta_capturas}'
         self.ultimo_juego_guardado = nombre
@@ -635,6 +1160,11 @@ class Generador(tk.Tk):
 
     def cerrar(self):
         self.guardar_configuracion()
+        for ruta in self._steam_temporales:
+            try:
+                ruta.unlink(missing_ok=True)
+            except OSError:
+                pass
         self.destroy()
 
 if __name__ == '__main__':

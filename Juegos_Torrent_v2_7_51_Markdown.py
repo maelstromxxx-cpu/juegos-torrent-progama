@@ -462,7 +462,7 @@ def parse_catalog(raw):
             kind, guide = 'torrent', ''
         elif len(parts) == 3:
             name, second, third = parts
-            if second.lower() in ('torrent', 'directa', 'pagina', 'txt'):
+            if second.lower() in ('torrent', 'directa', 'pagina', 'txt', 'md'):
                 kind, value, guide = second.lower(), third, ''
             else:
                 kind, value, guide = 'torrent', second, third
@@ -471,7 +471,7 @@ def parse_catalog(raw):
             kind = kind.lower()
         else:
             continue
-        if name and value and kind in ('torrent', 'directa', 'pagina', 'txt'):
+        if name and value and kind in ('torrent', 'directa', 'pagina', 'txt', 'md'):
             if kind in ('directa', 'pagina') and not value.lower().startswith(('https://', 'http://')):
                 continue
             games.append({'name': name, 'type': kind, 'value': value, 'guide': guide})
@@ -1873,7 +1873,7 @@ class App(tk.Tk):
                     raise ValueError('El catálogo supera el tamaño máximo permitido.')
                 raw = content.decode('utf-8-sig')
                 if re.search(r'<html|<!doctype', raw, re.I):
-                    raise ValueError('Google Drive devolvió una página HTML en lugar del TXT.')
+                    raise ValueError('Google Drive devolvió una página HTML en lugar del texto.')
                 games = parse_catalog(raw)
                 if not games:
                     raise ValueError('El catálogo no contiene entradas válidas.')
@@ -2591,13 +2591,14 @@ class App(tk.Tk):
         self.text_heading.config(text=shortened.rstrip() + '…',
                                  font=('Segoe UI', 9, 'bold'))
 
-    def show_text(self, title, content):
+    def show_text(self, title, content, markdown=False):
         self._full_text_heading = title
         self._raw_instruction_text = content
+        self._text_is_markdown = markdown or is_markdown_text(content)
         self._fit_text_heading()
         self.text_view.config(state='normal')
         self.text_view.delete('1.0', 'end')
-        if is_markdown_text(content):
+        if self._text_is_markdown:
             render_markdown(self.text_view, content)
         else:
             self.text_view.insert('1.0', content)
@@ -2827,7 +2828,7 @@ class App(tk.Tk):
         reader.configure(yscrollcommand=scroll.set)
         scroll.pack(side='right', fill='y')
         reader.pack(side='left', fill='both', expand=True)
-        if is_markdown_text(content):
+        if getattr(self, '_text_is_markdown', False):
             render_markdown(reader, content, font_size=size[0])
         else:
             reader.insert('1.0', content)
@@ -2868,32 +2869,32 @@ class App(tk.Tk):
                 with urlopen(request, timeout=35) as response:
                     data = response.read(2 * 1024 * 1024 + 1)
                 if len(data) > 2 * 1024 * 1024:
-                    raise ValueError('El TXT es demasiado grande para mostrarlo.')
+                    raise ValueError('El archivo de texto es demasiado grande para mostrarlo.')
                 raw = data.decode('utf-8-sig', errors='replace')
                 if re.search(r'(?is)^\s*(?:<!doctype\s+html|<html|<head|<body)', raw):
-                    raise ValueError('Google Drive devolvió una página HTML en lugar del TXT.')
-                self.after(0, lambda: self.text_loaded(request_id, title, raw))
+                    raise ValueError('Google Drive devolvió una página HTML en lugar del texto.')
+                self.after(0, lambda: self.text_loaded(request_id, title, raw, entry.get('type') == 'md'))
             except Exception as exc:
                 msg = str(exc)
                 self.after(0, lambda: self.text_failed(request_id, title, msg))
         threading.Thread(target=work, daemon=True).start()
 
-    def text_loaded(self, request_id, title, raw):
+    def text_loaded(self, request_id, title, raw, markdown=False):
         if request_id == self.text_request:
-            self.show_text(title, raw)
+            self.show_text(title, raw, markdown=markdown)
             self.status.config(text='Texto cargado: ' + title)
 
     def text_failed(self, request_id, title, msg):
         if request_id == self.text_request:
-            self.show_text(title, 'No se pudo cargar el TXT.\n\n' + msg)
-            self.status.config(text='Error al cargar el TXT.')
+            self.show_text(title, 'No se pudo cargar el texto.\n\n' + msg)
+            self.status.config(text='Error al cargar el texto.')
 
     def run_entry(self, entry):
         if self.busy:
             messagebox.showinfo('JUEGOS', 'Esperá a que termine la descarga actual.')
             return
         kind = entry['type']
-        if kind == 'txt':
+        if kind in ('txt', 'md'):
             self.show_remote_text(entry)
             return
         if kind == 'pagina':
