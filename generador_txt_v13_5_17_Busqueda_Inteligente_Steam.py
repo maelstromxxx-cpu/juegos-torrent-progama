@@ -30,6 +30,59 @@ FORMATOS = ('.jpg', '.jpeg', '.png', '.webp')
 
 USER_AGENT = 'Mozilla/5.0 (compatible; KalakasSoftSteam/1.0)'
 
+def traducir_mymemory_directo(texto):
+    """Consulta la API pública y verifica errores sin confundirlos con traducciones."""
+    ultimo_error = None
+    for idiomas in ('en|es', 'en-US|es-ES'):
+        parametros = urllib.parse.urlencode({'q': texto, 'langpair': idiomas, 'mt': '1'})
+        solicitud = urllib.request.Request(
+            'https://api.mymemory.translated.net/get?' + parametros,
+            headers={'User-Agent': USER_AGENT, 'Accept': 'application/json'})
+        try:
+            with urllib.request.urlopen(solicitud, timeout=22) as respuesta:
+                datos = json.loads(respuesta.read().decode('utf-8'))
+            codigo = int(datos.get('responseStatus') or 0)
+            detalle = str(datos.get('responseDetails') or '').strip()
+            traduccion = (datos.get('responseData') or {}).get('translatedText')
+            if codigo == 200 and isinstance(traduccion, str) and traduccion.strip():
+                # El servicio a veces devuelve mensajes de error en translatedText.
+                if re.search(r'(language pair.*not supported|invalid language|too many requests|quota exceeded)', traduccion, re.I):
+                    raise ValueError(traduccion)
+                return html.unescape(traduccion)
+            ultimo_error = detalle or f'MyMemory devolvió el estado {codigo}.'
+            if not re.search(r'(language|idioma|langpair|not supported)', ultimo_error, re.I):
+                break
+        except Exception as exc:
+            ultimo_error = str(exc)
+            if not re.search(r'(language|idioma|langpair|not supported)', ultimo_error, re.I):
+                break
+    raise ValueError('MyMemory rechazó la solicitud: ' + str(ultimo_error))
+
+# Sufijos comerciales que no suelen formar parte del nombre base en Steam.
+# Solo se quitan del FINAL y nunca se altera el título del catálogo.
+EDICIONES_STEAM = (
+    'Premium Edition', 'Deluxe Edition', 'Ultimate Edition',
+    'Complete Edition', 'Definitive Edition', 'Gold Edition',
+    'Digital Deluxe Edition', 'Special Edition', 'Collector\'s Edition',
+    'Game of the Year Edition', 'GOTY Edition', 'GOTY',
+    'Enhanced Edition', 'Legendary Edition', 'Anniversary Edition',
+    'Director\'s Cut', 'Remastered Edition',
+)
+
+def simplificar_titulo_steam(titulo):
+    """Devuelve un nombre base para búsqueda de respaldo, sin alterar el original."""
+    actual = titulo.strip()
+    while True:
+        anterior = actual
+        for edicion in sorted(EDICIONES_STEAM, key=len, reverse=True):
+            patron = r'(?i)(?:\s*[-–—:|]\s*|\s+)'+re.escape(edicion)+r'\s*$'
+            actual = re.sub(patron, '', actual).strip(' -–—:|')
+            if actual != anterior:
+                break
+        if actual == anterior:
+            break
+    return actual if actual and actual.casefold() != titulo.strip().casefold() else None
+
 class HTMLText(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -73,10 +126,18 @@ def extraer_updates_fitgirl(contenido_html):
     siguiente = re.search(r'<h[2-4]\b', contenido_html[encabezado.end():], re.I)
     segmento = contenido_html[encabezado.end():encabezado.end() + siguiente.start()] if siguiente else contenido_html[encabezado.end():]
     resultados, vistos = [], set()
-    items = re.findall(r'<li\b[^>]*>(.*?)(?=<li\b|</ol>|</ul>|$)', segmento, re.I | re.S)
+    # FitGirl usa tanto listas <li> como enlaces sueltos separados por <br>.
+    # Limitamos la lectura al primer contenedor de la sección para no recoger
+    # enlaces de descargas del repack ni otras partes de la página.
+    contenedor_html = re.search(r'<div\b[^>]*>(.*?)</div\s*>', segmento, re.I | re.S)
+    bloque = contenedor_html.group(1) if contenedor_html else segmento
+    items = re.findall(r'<li\b[^>]*>(.*?)(?=<li\b|</ol>|</ul>|$)', bloque, re.I | re.S)
+    if not items:
+        items = [bloque]  # Enlaces directos sin <li>, como Need for Speed Unbound.
     for item in items:
-        # Algunos enlaces son solamente referencias '(Source: ElAmigos)'.
-        item = re.split(r'\(\s*Source\s*:', item, maxsplit=1, flags=re.I)[0]
+        # Eliminar únicamente la referencia Source (no el resto del bloque).
+        item = re.sub(r'\(\s*Source\s*:\s*(?:<a\b[^>]*>.*?</a>|[^)]*)\s*\)',
+                      '', item, flags=re.I | re.S)
         enlaces = re.findall(r'<a\b[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>', item, re.I | re.S)
         for direccion, etiqueta in enlaces:
             url = html.unescape(direccion).strip()
@@ -84,18 +145,13 @@ def extraer_updates_fitgirl(contenido_html):
             destino = urllib.parse.urlparse(url)
             if destino.scheme not in ('http', 'https') or not destino.netloc or not nombre:
                 continue
-            if re.search(r'^(?:source|scene|elamigos|website|homepage)$', nombre, re.I):
+            if re.search(r'^(?:source|scene|elamigos|website|homepage|cs\.rin\.ru)$', nombre, re.I):
                 continue
-            archivo = bool(re.search(r'\.(?:rar|zip|7z|exe|iso|bin|001|torrent)(?:\b|$)', nombre, re.I))
-            actualizacion = bool(re.search(r'\b(?:update|updates|patch|hotfix|fix|dlc)\b', nombre, re.I))
-            # Los enlaces de contenedores se admiten aunque el título no tenga extensión.
-            contenedor = destino.hostname and destino.hostname.lower() in ('filecrypt.cc', 'www.filecrypt.cc')
-            if not (archivo or actualizacion or contenedor):
-                continue
+            # Dentro del contenedor de actualizaciones, los enlaces de
+            # descarga no necesitan llevar la palabra Update/Patch.
             if url not in vistos:
                 vistos.add(url)
                 resultados.append((nombre, url))
-            break
     if not resultados:
         raise ValueError('La sección existe, pero no contiene enlaces de actualizaciones reconocibles. Probá con HTML guardado para revisar el formato.')
     return resultados
@@ -335,7 +391,7 @@ def to_data(info, tamano='', repacker='FitGirl', review_percent=None):
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Generador de TXT/MD, portadas, capturas y torrents - v13.5.12 FitGirl')
+        self.title('Generador de TXT/MD, portadas, capturas y torrents - v13.5.16 Traductor MyMemory corregido')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -392,6 +448,10 @@ class Generador(tk.Tk):
             ruta = tk.StringVar(value=self.configuracion.get(seccion, ''))
             self.selector_carpeta(panel, ruta, 5)
             self.paneles.append((seccion, caja, ruta))
+            if seccion in ('SINOPSIS', 'INSTRUCCIONES'):
+                ttk.Button(panel, text='🌐 TRADUCIR AL ESPAÑOL',
+                           command=lambda sec=seccion, widget=caja: self.traducir_seccion(sec, widget)).grid(
+                               row=6, column=0, sticky='w', pady=(7, 0))
         # Herramienta de extracción para el panel UPDATES.
         panel_updates = principal.grid_slaves(row=0, column=3)[0]
         ttk.Label(panel_updates, text='URL de la publicación de FitGirl:').grid(row=6, column=0, sticky='w', pady=(7, 0))
@@ -464,6 +524,131 @@ class Generador(tk.Tk):
         ttk.Button(acciones, text='GENERADOR DE ID', command=self.abrir_generador_ids).pack(side='left', padx=8, ipadx=18, ipady=7)
         ttk.Button(acciones, text='BUSCAR EN STEAM', command=self.abrir_steam).pack(side='left', padx=8, ipadx=18, ipady=7)
         self.protocol('WM_DELETE_WINDOW', self.cerrar)
+
+    def traducir_seccion(self, seccion, cuadro):
+        """Vista previa editable, con MyMemory y opción de respaldo Google."""
+        original = cuadro.get('1.0', 'end-1c')
+        if not original.strip():
+            messagebox.showinfo('Traductor', f'El cuadro {seccion} está vacío.', parent=self)
+            return
+        ventana = tk.Toplevel(self)
+        ventana.title(f'Traducir {seccion} al español — vista previa')
+        ventana.geometry('850x640')
+        ventana.transient(self)
+        ventana.columnconfigure(0, weight=1)
+        ventana.rowconfigure(2, weight=1)
+        ttk.Label(ventana, text='Revisá y corregí la traducción antes de aplicarla.',
+                  padding=10).grid(row=0, column=0, sticky='w')
+        estado = tk.StringVar(value='Preparando traducción...')
+        ttk.Label(ventana, textvariable=estado, padding=(10, 0)).grid(row=1, column=0, sticky='w')
+        marco = ttk.Frame(ventana, padding=10)
+        marco.grid(row=2, column=0, sticky='nsew')
+        marco.rowconfigure(0, weight=1)
+        marco.columnconfigure(0, weight=1)
+        vista = tk.Text(marco, wrap='word', undo=True, font=('Segoe UI', 10))
+        vista.grid(row=0, column=0, sticky='nsew')
+        barra = ttk.Scrollbar(marco, orient='vertical', command=vista.yview)
+        barra.grid(row=0, column=1, sticky='ns')
+        vista.configure(yscrollcommand=barra.set)
+        self.menu_contextual(vista)
+        botones = ttk.Frame(ventana, padding=10)
+        botones.grid(row=3, column=0, sticky='e')
+        aplicar = ttk.Button(botones, text='APLICAR TRADUCCIÓN', state='disabled')
+        aplicar.pack(side='left', padx=5)
+        reintentar = ttk.Button(botones, text='PROBAR CON GOOGLE', state='disabled')
+        reintentar.pack(side='left', padx=5)
+        ttk.Button(botones, text='Cancelar', command=ventana.destroy).pack(side='left', padx=5)
+
+        def confirmar():
+            texto = vista.get('1.0', 'end-1c')
+            if not texto.strip():
+                messagebox.showwarning('Traductor', 'La traducción está vacía.', parent=ventana)
+                return
+            if cuadro.get('1.0', 'end-1c') != original:
+                if not messagebox.askyesno('Texto modificado',
+                        'El texto original cambió mientras traducíamos. ¿Querés reemplazarlo igualmente?', parent=ventana):
+                    return
+            cuadro.delete('1.0', 'end')
+            cuadro.insert('1.0', texto)
+            ventana.destroy()
+        aplicar.configure(command=confirmar)
+
+        def trabajo(motor):
+            if motor == 'Google':
+                try:
+                    from deep_translator import GoogleTranslator
+                except ImportError:
+                    self.after(0, lambda: terminar(None, 'Falta instalar deep-translator. Ejecutá: py -m pip install deep-translator', motor))
+                    return
+            try:
+                # Evitar que se traduzcan direcciones, rutas y nombres de archivos.
+                patron = re.compile(
+                    r'https?://[^\s<>\]\[)]+|www\.[^\s<>]+|'
+                    r'[A-Za-z]:\\[^\s\n]+|(?:\.\.?[/\\])[^\s\n]+|'
+                    r'\b[\w.()+-]+\.(?:exe|dll|ini|cfg|bat|cmd|ps1|zip|rar|7z|iso|txt|md|torrent|dat|bin)\b',
+                    re.IGNORECASE)
+                protegidos = []
+                def proteger(m):
+                    i = len(protegidos)
+                    protegidos.append(m.group(0))
+                    return f' KALAKAPROTECT{i}END '
+                seguro = patron.sub(proteger, original)
+                # MyMemory: API directa, comprobando respuesta y códigos de idioma.
+                # Google queda disponible como respaldo manual.
+                traductor = GoogleTranslator(source='auto', target='es') if motor == 'Google' else None
+                partes = re.split(r'(\n+)', seguro)
+                traducidas = []
+                limite = 450 if motor == 'MyMemory' else 3500
+                for parte in partes:
+                    if not parte.strip() or parte.startswith('\n'):
+                        traducidas.append(parte)
+                        continue
+                    fragmentos = []
+                    restante = parte
+                    while restante:
+                        if len(restante) <= limite:
+                            fragmentos.append(restante)
+                            break
+                        corte = max(restante.rfind('. ', 0, limite), restante.rfind(' ', 0, limite))
+                        corte = limite if corte < 60 else corte + 1
+                        fragmentos.append(restante[:corte])
+                        restante = restante[corte:]
+                    traducidas.append(''.join(traducir_mymemory_directo(t) if motor == 'MyMemory' else (traductor.translate(t) or t) for t in fragmentos))
+                resultado = ''.join(traducidas)
+                for i, valor in enumerate(protegidos):
+                    marcador = r'KALAKAPROTECT\s*' + str(i) + r'\s*END'
+                    if not re.search(marcador, resultado, flags=re.IGNORECASE):
+                        raise ValueError('El traductor alteró una ruta, URL o nombre de archivo protegido. No se aplicó ningún cambio.')
+                    resultado = re.sub(marcador, lambda m, v=valor: v, resultado, flags=re.IGNORECASE)
+                self.after(0, lambda: terminar(resultado, None, motor))
+            except Exception as exc:
+                self.after(0, lambda msg=str(exc): terminar(None, msg, motor))
+
+        def iniciar(motor):
+            if not ventana.winfo_exists():
+                return
+            estado.set(f'Traduciendo con {motor}... (requiere Internet)')
+            reintentar.configure(state='disabled')
+            threading.Thread(target=trabajo, args=(motor,), daemon=True).start()
+
+        def terminar(resultado, error, motor):
+            if not ventana.winfo_exists():
+                return
+            if error:
+                estado.set(f'{motor} no pudo traducir. El texto original sigue intacto.')
+                if motor == 'MyMemory':
+                    reintentar.configure(state='normal')
+                    messagebox.showwarning('Traductor MyMemory',
+                        f'{error}\n\nPodés probar el botón PROBAR CON GOOGLE (puede estar limitado).', parent=ventana)
+                else:
+                    messagebox.showerror('Traductor Google', error, parent=ventana)
+                return
+            vista.delete('1.0', 'end')
+            vista.insert('1.0', resultado)
+            estado.set(f'Traducción terminada con {motor}. Podés corregirla antes de aplicarla.')
+            aplicar.configure(state='normal')
+        reintentar.configure(command=lambda: iniciar('Google'))
+        iniciar('MyMemory')
 
     def abrir_steam(self):
         """Buscador opcional. Nunca modifica archivos hasta GUARDAR TODOS."""
@@ -611,8 +796,23 @@ class Generador(tk.Tk):
                 lista.selection_set(0)
                 cargar()
                 return
-            tarea(lambda: fetch_json('https://store.steampowered.com/api/storesearch/',
-                                     {'term': texto, 'l': 'spanish', 'cc': 'ar'}).get('items', []), establecer_resultados)
+            def consultar_steam():
+                url = 'https://store.steampowered.com/api/storesearch/'
+                originales = fetch_json(url, {'term': texto, 'l': 'spanish', 'cc': 'ar'}).get('items', []) or []
+                if originales:
+                    return originales, texto, False
+                base = simplificar_titulo_steam(texto)
+                if base:
+                    alternativos = fetch_json(url, {'term': base, 'l': 'spanish', 'cc': 'ar'}).get('items', []) or []
+                    return alternativos, base, True
+                return [], texto, False
+            def mostrar_resultados(respuesta):
+                items, termino, simplificada = respuesta
+                establecer_resultados(items)
+                if simplificada:
+                    estado.set(f'Sin resultados para el título completo. Búsqueda alternativa: "{termino}". '
+                               f'{len(items)} resultados; seleccioná el juego. El título del catálogo no cambia.')
+            tarea(consultar_steam, mostrar_resultados)
 
         def establecer_resultados(items):
             resultados[:] = items
@@ -672,7 +872,9 @@ class Generador(tk.Tk):
             if any(actuales[n].strip() and actuales[n].strip() != PLANTILLA_DATOS.format(fecha=date.today().strftime('%d/%m/%Y')).strip() for n in nuevos):
                 if not messagebox.askyesno('Reemplazar textos', 'Ya hay contenido en Datos o Sinopsis. ¿Querés reemplazarlo por lo importado de Steam?', parent=ventana):
                     return
-            self.nombre_juego.set(info.get('name', self.nombre_juego.get()))
+            # Respetar el título que el usuario eligió en el generador principal.
+            if not self.nombre_juego.get().strip():
+                self.nombre_juego.set(info.get('name', ''))
             for nombre, caja, _ in self.paneles:
                 if nombre in nuevos:
                     caja.delete('1.0', 'end')
