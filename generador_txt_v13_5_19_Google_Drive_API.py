@@ -6,6 +6,7 @@ import tempfile
 import subprocess
 import shutil as shutil_browser
 import threading
+import time
 import urllib.parse
 import urllib.request
 import html
@@ -14,7 +15,7 @@ import tkinter as tk
 from pathlib import Path
 from datetime import date
 from urllib.parse import urlparse, parse_qs, unquote
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, simpledialog
 
 try:
     from PIL import Image, ImageTk
@@ -388,10 +389,85 @@ def to_data(info, tamano='', repacker='FitGirl', review_percent=None):
             f'Repacker: {repacker.strip() or "FitGirl"}\n')
 
 
+# Drive: solo lectura de metadatos. Nunca se suben, borran ni editan archivos.
+DRIVE_SCOPE = ['https://www.googleapis.com/auth/drive.metadata.readonly']
+DRIVE_TOKEN = Path.home() / '.kalakas_drive_token.json'
+
+
+def conectar_drive(credenciales_json):
+    """OAuth de escritorio; el JSON y el token permanecen en esta computadora."""
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request, AuthorizedSession
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError as exc:
+        raise RuntimeError('Faltan bibliotecas de Google. Instalá con: py -m pip install google-auth google-auth-oauthlib requests') from exc
+    credenciales = None
+    if DRIVE_TOKEN.is_file():
+        try:
+            credenciales = Credentials.from_authorized_user_file(str(DRIVE_TOKEN), DRIVE_SCOPE)
+        except Exception:
+            credenciales = None
+    if credenciales and credenciales.expired and credenciales.refresh_token:
+        try:
+            credenciales.refresh(Request())
+        except Exception:
+            credenciales = None
+    if not credenciales or not credenciales.valid:
+        archivo = Path(credenciales_json).expanduser()
+        if not archivo.is_file():
+            raise ValueError('Seleccioná el JSON de cliente OAuth descargado desde Google Cloud.')
+        flow = InstalledAppFlow.from_client_secrets_file(str(archivo), DRIVE_SCOPE)
+        credenciales = flow.run_local_server(port=0, open_browser=True, authorization_prompt_message='Abrí esta dirección si el navegador no se abrió: {url}', success_message='Kalaka\'s Soft: autorización completada. Podés cerrar esta pestaña.')
+    DRIVE_TOKEN.write_text(credenciales.to_json(), encoding='utf-8')
+    try:
+        DRIVE_TOKEN.chmod(0o600)
+    except OSError:
+        pass
+    return AuthorizedSession(credenciales)
+
+
+def drive_listar(sesion, consulta, campos='nextPageToken,files(id,name,mimeType,parents,webViewLink,modifiedTime)', limite=200):
+    """Busca sin descargar contenido; admite paginación."""
+    encontrados = []
+    pagina = None
+    while True:
+        parametros = {'q': consulta, 'fields': campos, 'page_size': min(limite, 1000), 'spaces': 'drive'}
+        if pagina:
+            parametros['page_token'] = pagina
+        respuesta = sesion.get('https://www.googleapis.com/drive/v3/files', params=parametros, timeout=25)
+        respuesta.raise_for_status()
+        datos = respuesta.json()
+        encontrados.extend(datos.get('files', []))
+        pagina = datos.get('nextPageToken')
+        if not pagina:
+            return encontrados
+
+
+def drive_escapar(valor):
+    return valor.replace(chr(92), chr(92) * 2).replace("'", chr(92) + "'")
+
+
+def drive_buscar_archivos(sesion, carpeta_id, nombres):
+    """Devuelve candidatos exactos por nombre dentro de la carpeta elegida."""
+    encontrados = []
+    for nombre in dict.fromkeys(nombres):
+        if not nombre:
+            continue
+        q = f"trashed = false and '{drive_escapar(carpeta_id)}' in parents and name = '{drive_escapar(nombre)}'"
+        encontrados.extend(drive_listar(sesion, q))
+    return list({archivo['id']: archivo for archivo in encontrados}.values())
+
+
+def drive_buscar_carpeta(sesion, nombre):
+    q = "trashed = false and mimeType = 'application/vnd.google-apps.folder' and name = '" + drive_escapar(nombre) + "'"
+    return drive_listar(sesion, q)
+
+
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Generador de TXT/MD, portadas, capturas y torrents - v13.5.16 Traductor MyMemory corregido')
+        self.title('Kalaka’s Soft - Generador v13.5.19 · Google Drive API')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -412,6 +488,8 @@ class Generador(tk.Tk):
         self.ruta_portadas = tk.StringVar(value=self.configuracion.get('PORTADAS', ''))
         self.ruta_torrents = tk.StringVar(value=self.configuracion.get('TORRENTS', ''))
         self.archivo_torrent = None
+        self.ultimo_torrent_guardado = ''
+        self.drive_credenciales = self.configuracion.get('DRIVE_CREDENTIALS', '')
         ttk.Style(self).configure('TButton', padding=5)
 
         exterior = ttk.Frame(self)
@@ -798,19 +876,21 @@ class Generador(tk.Tk):
                 return
             def consultar_steam():
                 url = 'https://store.steampowered.com/api/storesearch/'
-                originales = fetch_json(url, {'term': texto, 'l': 'spanish', 'cc': 'ar'}).get('items', []) or []
-                if originales:
-                    return originales, texto, False
                 base = simplificar_titulo_steam(texto)
+                # Buscar primero el juego base: suele mostrar tanto el juego como sus ediciones.
+                termino = base or texto
+                originales = fetch_json(url, {'term': termino, 'l': 'spanish', 'cc': 'ar'}).get('items', []) or []
+                if originales:
+                    return originales, termino, bool(base)
                 if base:
-                    alternativos = fetch_json(url, {'term': base, 'l': 'spanish', 'cc': 'ar'}).get('items', []) or []
-                    return alternativos, base, True
+                    alternativos = fetch_json(url, {'term': texto, 'l': 'spanish', 'cc': 'ar'}).get('items', []) or []
+                    return alternativos, texto, False
                 return [], texto, False
             def mostrar_resultados(respuesta):
                 items, termino, simplificada = respuesta
                 establecer_resultados(items)
                 if simplificada:
-                    estado.set(f'Sin resultados para el título completo. Búsqueda alternativa: "{termino}". '
+                    estado.set(f'Búsqueda por título base: "{termino}". '
                                f'{len(items)} resultados; seleccioná el juego. El título del catálogo no cambia.')
             tarea(consultar_steam, mostrar_resultados)
 
@@ -833,10 +913,28 @@ class Generador(tk.Tk):
                 if not registro.get('success') or not registro.get('data'):
                     raise ValueError('Steam no devolvió datos para este juego.')
                 info = registro['data']
+                # Evitar importar silenciosamente la ficha de otro juego si Steam
+                # devuelve datos incompatibles con el resultado elegido.
                 review_percent, diagnostico = obtener_valoracion_steam(appid)
                 return info, review_percent, diagnostico
             def mostrar(resultado):
                 info, review_percent, diagnostico = resultado
+                seleccionado = resultados[seleccion[0]].get('name', '')
+                nombre_devuelto = info.get('name', '')
+                def normalizar_nombre(valor):
+                    return re.sub(r'[^a-z0-9]+', '', valor.casefold())
+                if (seleccionado and nombre_devuelto and
+                    normalizar_nombre(seleccionado) != normalizar_nombre(nombre_devuelto) and
+                    normalizar_nombre(nombre_devuelto) not in normalizar_nombre(seleccionado) and
+                    normalizar_nombre(seleccionado) not in normalizar_nombre(nombre_devuelto)):
+                    if not messagebox.askyesno('Steam: ficha diferente',
+                        f'Seleccionaste: {seleccionado} (ID {appid})\n\n'
+                        f'Steam devolvió la ficha: {nombre_devuelto}\n\n'
+                        'Podría tratarse de un paquete o de un resultado incorrecto. '
+                        '¿Querés mostrar igualmente estos datos? No se importarán automáticamente.',
+                        parent=ventana):
+                        estado.set('Ficha descartada: el nombre devuelto no coincide con el seleccionado.')
+                        return
                 detalles['data'] = info
                 self.steam_appid = appid
                 detalles['review_percent'] = review_percent
@@ -998,6 +1096,122 @@ class Generador(tk.Tk):
         botones.grid(row=11, column=0, sticky='w', pady=(12, 6))
         estado.grid(row=12, column=0, sticky='w', pady=(5, 0))
         ttk.Label(izquierda, text='El catálogo se guarda únicamente al pulsar GUARDAR CATÁLOGO.', wraplength=410).grid(row=13, column=0, sticky='w', pady=(15, 0))
+        drive_panel = ttk.LabelFrame(izquierda, text=' GOOGLE DRIVE API · SOLO METADATOS ', padding=8)
+        drive_panel.grid(row=14, column=0, sticky='ew', pady=(10, 0))
+        drive_panel.columnconfigure(0, weight=1)
+        carpeta_drive = tk.StringVar(value=self.configuracion.get('DRIVE_FOLDER', 'MiCatalogoRemoto'))
+        ttk.Label(drive_panel, text='Nombre de carpeta en Drive (o ID de carpeta):').grid(row=0, column=0, sticky='w')
+        campo_carpeta = ttk.Entry(drive_panel, textvariable=carpeta_drive)
+        campo_carpeta.grid(row=1, column=0, sticky='ew', pady=(2, 5))
+        self.menu_contextual(campo_carpeta)
+        estado_drive = tk.StringVar(value='Seleccioná tu JSON OAuth una vez y luego obtené los IDs.')
+        ttk.Label(drive_panel, textvariable=estado_drive, wraplength=400).grid(row=3, column=0, sticky='w', pady=(5, 0))
+        fila_drive = ttk.Frame(drive_panel)
+        fila_drive.grid(row=2, column=0, sticky='w')
+        def elegir_json():
+            ruta = filedialog.askopenfilename(parent=ventana, title='Elegir JSON OAuth de Google Cloud', filetypes=[('Credenciales OAuth', '*.json')])
+            if ruta:
+                self.drive_credenciales = ruta
+                self.configuracion['DRIVE_CREDENTIALS'] = ruta
+                self.guardar_configuracion()
+                estado_drive.set('Credenciales seleccionadas. Ya podés consultar Drive.')
+        ttk.Button(fila_drive, text='ELEGIR JSON OAUTH', command=elegir_json).pack(side='left', padx=(0, 5))
+        boton_drive = ttk.Button(fila_drive, text='OBTENER IDs DE DRIVE')
+        boton_drive.pack(side='left')
+        def elegir_candidato(tipo, candidatos):
+            if len(candidatos) == 1:
+                return candidatos[0]
+            dialogo = tk.Toplevel(ventana)
+            dialogo.title('Drive: elegir ' + tipo)
+            dialogo.geometry('760x330')
+            dialogo.transient(ventana)
+            ttk.Label(dialogo, text='Hay varios resultados para ' + tipo + '. Elegí el correcto:', padding=10).pack(anchor='w')
+            listado = tk.Listbox(dialogo, exportselection=False)
+            listado.pack(fill='both', expand=True, padx=10)
+            for item in candidatos:
+                listado.insert('end', item['name'] + '   [' + item['id'] + ']')
+            elegido = [None]
+            def confirmar():
+                sel = listado.curselection()
+                if sel:
+                    elegido[0] = candidatos[sel[0]]
+                    dialogo.destroy()
+            ttk.Button(dialogo, text='USAR SELECCIONADO', command=confirmar).pack(pady=8)
+            dialogo.protocol('WM_DELETE_WINDOW', dialogo.destroy)
+            dialogo.grab_set()
+            ventana.wait_window(dialogo)
+            return elegido[0]
+        def buscar_ids():
+            nombre = titulo.get().strip()
+            if not nombre:
+                messagebox.showwarning('Drive', 'Primero indicá el título del juego.', parent=ventana)
+                return
+            if not self.drive_credenciales:
+                messagebox.showwarning('Drive', 'Primero seleccioná tu JSON OAuth.', parent=ventana)
+                return
+            carpeta = carpeta_drive.get().strip()
+            if not carpeta:
+                messagebox.showwarning('Drive', 'Indicá el nombre o ID de la carpeta.', parent=ventana)
+                return
+            torrent_nombre = self.ultimo_torrent_guardado or (self.archivo_torrent.name if self.archivo_torrent else '')
+            if not torrent_nombre:
+                torrent_nombre = simpledialog.askstring('Nombre del torrent', 'No hay torrent seleccionado/guardado en esta sesión. Escribí su nombre exacto (incluido .torrent), o cancelá para buscar solo los MD:', parent=ventana) or ''
+            estado_drive.set('Conectando y consultando Drive... Se puede abrir el navegador.')
+            boton_drive.configure(state='disabled')
+            self.configuracion['DRIVE_FOLDER'] = carpeta
+            self.guardar_configuracion()
+            def trabajo():
+                try:
+                    sesion = conectar_drive(self.drive_credenciales)
+                    if re.fullmatch(r'[A-Za-z0-9_-]{25,}', carpeta):
+                        carpeta_id = carpeta
+                        carpetas = []
+                    else:
+                        carpetas = drive_buscar_carpeta(sesion, carpeta)
+                        carpeta_id = carpetas[0]['id'] if len(carpetas) == 1 else None
+                    if not carpeta_id:
+                        self.after(0, lambda: finalizar(None, carpetas, 'Carpeta no encontrada o hay varias con el mismo nombre. Pegá el ID de la carpeta en el campo para identificarla.'))
+                        return
+                    # El código original guarda INSTRUCCIONES con _inst.md, no _ins.md.
+                    nombres = {'torrent': [torrent_nombre] if torrent_nombre else [],
+                               'instrucciones': [nombre + '_inst.md', nombre + '_ins.md'],
+                               'update': [nombre + '_upd.md']}
+                    resultado = {}
+                    for intento in range(4):
+                        for tipo, archivos in nombres.items():
+                            if tipo not in resultado or not resultado[tipo]:
+                                resultado[tipo] = drive_buscar_archivos(sesion, carpeta_id, archivos)
+                        if all(resultado[t] for t in nombres if nombres[t]):
+                            break
+                        if intento < 3:
+                            time.sleep(2)
+                    self.after(0, lambda: finalizar(resultado, None, None))
+                except Exception as exc:
+                    error = str(exc)
+                    self.after(0, lambda: finalizar(None, None, error))
+            def finalizar(resultado, carpetas, error):
+                if not ventana.winfo_exists():
+                    return
+                boton_drive.configure(state='normal')
+                if error:
+                    estado_drive.set('No se pudieron recuperar los IDs.')
+                    messagebox.showerror('Google Drive API', error, parent=ventana)
+                    return
+                variables = {'torrent': torrent, 'instrucciones': instrucciones, 'update': update}
+                encontrados, pendientes = [], []
+                for tipo, variable in variables.items():
+                    candidatos = resultado.get(tipo, [])
+                    if not candidatos:
+                        pendientes.append(tipo)
+                        continue
+                    elegido = elegir_candidato(tipo, candidatos)
+                    if elegido:
+                        variable.set('https://drive.google.com/file/d/' + elegido['id'] + '/view')
+                        encontrados.append(tipo)
+                estado_drive.set('IDs obtenidos: ' + ', '.join(encontrados or ['ninguno']) + ('. Pendientes: ' + ', '.join(pendientes) if pendientes else '.'))
+            threading.Thread(target=trabajo, daemon=True).start()
+        boton_drive.configure(command=buscar_ids)
+
 
         herramientas = ttk.Frame(derecha)
         herramientas.grid(row=0, column=0, sticky='ew', pady=(0, 6))
@@ -1249,8 +1463,21 @@ class Generador(tk.Tk):
         ttk.Label(filtro, text='AppID Steam:').pack(side='left')
         appid = tk.StringVar(value=str(self.steam_appid or ''))
         ttk.Entry(filtro, textvariable=appid, width=16).pack(side='left', padx=6)
-        ttk.Label(filtro, text='(Se completa al cargar un juego desde Steam)').pack(side='left')
-        estado = tk.StringVar(value='Ingresá la clave una sola vez y buscá portadas.')
+        ttk.Label(filtro, text='(independiente de la ficha Steam)').pack(side='left')
+        filtro_nombre = ttk.Frame(ventana, padding=(10, 5))
+        filtro_nombre.pack(fill='x')
+        ttk.Label(filtro_nombre, text='Buscar juego por nombre:').pack(side='left')
+        nombre_sgdb = tk.StringVar(value=simplificar_titulo_steam(self.nombre_juego.get()) or self.nombre_juego.get())
+        ttk.Entry(filtro_nombre, textvariable=nombre_sgdb, width=44).pack(side='left', padx=6, fill='x', expand=True)
+        buscar_juegos_btn = ttk.Button(filtro_nombre, text='BUSCAR JUEGOS')
+        buscar_juegos_btn.pack(side='left')
+        juegos_sgdb = []
+        juego_elegido = tk.StringVar(value='')
+        selector_juego = ttk.Combobox(ventana, textvariable=juego_elegido, state='readonly', width=70)
+        selector_juego.pack(fill='x', padx=10, pady=(0, 4))
+        ttk.Button(ventana, text='Usar AppID de Steam (quitar selección SGDB)',
+                   command=lambda: selector_juego.set('')).pack(anchor='w', padx=10)
+        estado = tk.StringVar(value='Buscá por nombre en SteamGridDB o usá un AppID de Steam.')
         ttk.Label(ventana, textvariable=estado, wraplength=690).pack(fill='x', padx=10, pady=7)
         cuerpo = ttk.Frame(ventana, padding=10)
         cuerpo.pack(fill='both', expand=True)
@@ -1282,6 +1509,7 @@ class Generador(tk.Tk):
                 return
             ocupado['value'] = True
             buscar_btn.configure(state='disabled')
+            buscar_juegos_btn.configure(state='disabled')
             usar_btn.configure(state='disabled')
             estado.set('Consultando SteamGridDB...')
             def worker():
@@ -1296,22 +1524,41 @@ class Generador(tk.Tk):
                     return
                 ocupado['value'] = False
                 buscar_btn.configure(state='normal')
+                buscar_juegos_btn.configure(state='normal')
                 if error:
                     estado.set('Error: ' + error)
                 else:
                     listo(resultado)
             threading.Thread(target=worker, daemon=True).start()
 
-        def buscar():
-            numero = appid.get().strip()
-            if not numero.isdigit():
-                messagebox.showinfo('AppID', 'Primero cargá un juego desde Steam o ingresá su AppID.', parent=ventana)
+        def buscar_juegos():
+            termino = nombre_sgdb.get().strip()
+            if not termino:
                 return
             def obtener():
-                # Grids verticales, preferentemente 600x900; otras dimensiones como respaldo.
-                encontrados = sgdb_get('/grids/steam/' + numero + '?dimensions=600x900')
+                ruta = '/search/autocomplete/' + urllib.parse.quote(termino, safe='')
+                return sgdb_get(ruta)
+            def mostrar(items):
+                juegos_sgdb[:] = [x for x in items if x.get('id') is not None]
+                selector_juego['values'] = [f'{x.get("name", "Sin nombre")} (SGDB ID {x["id"]})' for x in juegos_sgdb]
+                juego_elegido.set('')
+                estado.set(f'{len(juegos_sgdb)} juegos encontrados. Elegí uno en la lista para ver sus portadas.')
+            tarea(obtener, mostrar)
+
+        def buscar():
+            numero = appid.get().strip()
+            indice = selector_juego.current()
+            if indice >= 0 and indice < len(juegos_sgdb):
+                ruta = '/grids/game/' + str(juegos_sgdb[indice]['id'])
+            elif numero.isdigit():
+                ruta = '/grids/steam/' + numero
+            else:
+                messagebox.showinfo('SteamGridDB', 'Buscá un juego por nombre y elegilo, o ingresá un AppID.', parent=ventana)
+                return
+            def obtener():
+                encontrados = sgdb_get(ruta + '?dimensions=600x900')
                 if not encontrados:
-                    encontrados = sgdb_get('/grids/steam/' + numero)
+                    encontrados = sgdb_get(ruta)
                 return [x for x in encontrados if x.get('url') and x.get('width', 0) < x.get('height', 0)][:40]
             def mostrar(items):
                 opciones[:] = items
@@ -1374,6 +1621,10 @@ class Generador(tk.Tk):
         botones.pack(fill='x')
         buscar_btn = ttk.Button(botones, text='BUSCAR PORTADAS', command=buscar)
         buscar_btn.pack(side='left')
+        buscar_juegos_btn.configure(command=buscar_juegos)
+        nombre_sgdb_entry = filtro_nombre.winfo_children()[1]
+        nombre_sgdb_entry.bind('<Return>', lambda event: buscar_juegos())
+        selector_juego.bind('<<ComboboxSelected>>', lambda event: buscar())
         usar_btn = ttk.Button(botones, text='USAR PORTADA', command=usar, state='disabled')
         usar_btn.pack(side='left', padx=10)
         listado.bind('<<ListboxSelect>>', ver)
@@ -1505,6 +1756,8 @@ class Generador(tk.Tk):
         datos['STEAMGRIDDB_KEY'] = self.sgdb_key.get().strip()
         datos['TORRENTS'] = self.ruta_torrents.get().strip()
         datos['CATALOGO'] = self.configuracion.get('CATALOGO', '')
+        datos['DRIVE_CREDENTIALS'] = self.configuracion.get('DRIVE_CREDENTIALS', '')
+        datos['DRIVE_FOLDER'] = self.configuracion.get('DRIVE_FOLDER', 'MiCatalogoRemoto')
         try:
             CONFIG.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding='utf-8')
         except OSError:
@@ -1641,6 +1894,7 @@ class Generador(tk.Tk):
         if carpeta_capturas:
             mensaje += f'\n\nCarpeta de capturas: {carpeta_capturas}'
         self.ultimo_juego_guardado = nombre
+        self.ultimo_torrent_guardado = self.archivo_torrent.name if self.archivo_torrent else ''
         self.limpiar_formulario()
         messagebox.showinfo('Guardado completo', mensaje)
         self.abrir_generador_ids()
