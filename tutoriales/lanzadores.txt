@@ -1,1 +1,0 @@
-LANZADORES\n\nAcá podés escribir los pasos para cada lanzador, añadir capturas en un PDF o dividirlos en varias guías desde guias.json.

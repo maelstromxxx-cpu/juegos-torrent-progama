@@ -467,7 +467,7 @@ def drive_buscar_carpeta(sesion, nombre):
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Kalaka’s Soft - Generador v13.5.19 · Google Drive API')
+        self.title('Kalaka’s Soft - Generador v13.5.21 · SteamGridDB y aviso torrent')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -1363,6 +1363,35 @@ class Generador(tk.Tk):
                 else:
                     estado.configure(text='Juego no encontrado. Resultado generado; podés copiarlo y pegarlo manualmente.')
             else:
+                # Evita publicaciones duplicadas sin impedir otras ediciones del juego.
+                # Se consulta el contenido ACTUAL del editor, incluidos cambios sin guardar.
+                def clave_juego(valor):
+                    return ' '.join(valor.casefold().split())
+
+                clave_nueva = clave_juego(nombre)
+                existentes = []
+                for numero, linea in enumerate(editor.get('1.0', 'end-1c').splitlines(), 1):
+                    if not linea.strip() or linea.lstrip().startswith('---'):
+                        continue
+                    titulo_existente = linea.split('|', 1)[0].strip()
+                    if clave_juego(titulo_existente) == clave_nueva:
+                        existentes.append((numero, titulo_existente))
+                if existentes:
+                    detalle = '\n'.join(f'Línea {n}: {t}' for n, t in existentes[:8])
+                    if len(existentes) > 8:
+                        detalle += f'\n... y {len(existentes) - 8} coincidencia(s) más.'
+                    if not messagebox.askyesno(
+                        'Posible juego duplicado',
+                        f'¡Atención! «{nombre}» ya figura en el catálogo '
+                        f'({len(existentes)} coincidencia(s)).\n\n'
+                        f'{detalle}\n\n'
+                        '¿Querés insertarlo de todas formas?\n'
+                        'Elegí NO para evitar un registro duplicado.',
+                        parent=ventana,
+                        default='no',
+                    ):
+                        estado.configure(text='No se insertó: el juego ya figura en el catálogo.')
+                        return
                 editor.insert('1.0', texto + '\n')
                 editor.see('1.0')
                 estado.configure(text='Registro insertado al comienzo del editor. Falta guardar el catálogo.')
@@ -1451,7 +1480,8 @@ class Generador(tk.Tk):
         """Busca grids verticales con AppID de Steam, sin abrir páginas externas."""
         ventana = tk.Toplevel(self)
         ventana.title('Kalaka’s Soft · Portadas SteamGridDB')
-        ventana.geometry('740x610')
+        ventana.geometry('850x820')
+        ventana.minsize(740, 690)
         ventana.transient(self)
         barra = ttk.Frame(ventana, padding=10)
         barra.pack(fill='x')
@@ -1867,6 +1897,18 @@ class Generador(tk.Tk):
         for _, _, origen in trabajos:
             if origen is not None and not origen.is_file():
                 messagebox.showerror('Archivo no encontrado', f'No existe la imagen: {origen}')
+                return
+        # Advertir antes de guardar si no se seleccionó un torrent.
+        # Se permite continuar para fichas preparatorias o actualizaciones.
+        if self.archivo_torrent is None:
+            if not messagebox.askyesno(
+                'Falta el archivo torrent',
+                'No seleccionaste ningún archivo .torrent para este juego.\\n\\n'
+                '¿Querés guardar los demás archivos de todas maneras?\\n\\n'
+                'Elegí NO para volver y agregar el torrent.',
+                parent=self,
+                default='no',
+            ):
                 return
         existentes = [str(p) for p, _, _ in trabajos if p.exists()]
         if existentes and not messagebox.askyesno('Archivos existentes', f'{len(existentes)} archivo(s) ya existen y serán reemplazados.\n\n' + '\n'.join(existentes[:12]) + ('\n...' if len(existentes)>12 else '') + '\n\n¿Continuar?'):

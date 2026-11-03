@@ -989,15 +989,14 @@ class BotonDescargaModerno(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.50')
+        self.title('Juegos Torrent 2.7.56')
+        self.withdraw()  # La biblioteca se muestra al terminar la carga inicial.
+        self._initial_splash = True
         self._startup_split_job = None
         self._startup_split_done = False
         self.bind('<Map>', self._on_window_mapped, add='+')
         self.geometry('1280x800')
-        try:
-            self.state('zoomed')  # Maximizada en Windows, sin ocultar la barra de tareas.
-        except tk.TclError:
-            pass
+        # Biblioteca oculta hasta terminar el splash.
         self.minsize(760, 500)
         self.configure(bg=BG)
         self.remote_manifest = {}
@@ -1361,108 +1360,151 @@ class App(tk.Tk):
                  anchor='e', font=('Segoe UI', 8)).pack(side='right', padx=(12, 0))
         # Splash integrado: cubre la ventana completa mientras se prepara el catálogo.
         self._build_startup_splash()
+        # Dejar que Tk dibuje el splash ANTES de iniciar tareas de red.
+        self.after(120, self._start_initial_loading)
+
+    def _start_initial_loading(self):
         self.load_catalog()
         self.load_remote_manifest()
 
     def _build_startup_splash(self):
-        """Pantalla de arranque dentro de la ventana, sin Toplevel."""
-        self.splash = tk.Frame(self, bg=BG, bd=0)
-        self.splash.place(x=0, y=0, relwidth=1, relheight=1)
-        self.splash.lift()
-        self.splash_canvas = tk.Canvas(self.splash, bg=BG, bd=0,
-                                       highlightthickness=0)
+        """Ventana de bienvenida independiente, centrada y con imagen aleatoria."""
+        self.splash = tk.Toplevel(self)
+        self.splash.title("Kalaka's Soft | Juegos Torrent")
+        self.splash.configure(bg='#0c1118')
+        self.splash.resizable(False, False)
+        self.splash.overrideredirect(True)
+        self.splash.attributes('-topmost', True)
+        self._splash_started_at = __import__('time').monotonic()
+        width, height = 850, 565
+        x = max(0, (self.winfo_screenwidth() - width) // 2)
+        y = max(0, (self.winfo_screenheight() - height) // 2)
+        self.splash.geometry(f'{width}x{height}+{x}+{y}')
+        self.splash_canvas = tk.Canvas(self.splash, width=width, height=height,
+                                       bg='#0c1118', highlightthickness=0)
         self.splash_canvas.pack(fill='both', expand=True)
-        self.splash_image = None
-        self.splash_source = None
         self.splash_photo = None
-        self._splash_photo_size = None
-        # La preferencia se guarda fuera del código para poder cambiarla cuando quieras.
-        selection_file = ASSETS / 'splash_seleccion.txt'
-        try:
-            selected = selection_file.read_text(encoding='utf-8').strip()
-        except OSError:
-            selected = '1'
-        selected = selected if selected in ('1', '2') else '1'
-        image_path = ASSETS / f'splash_opcion_{selected}.png'
-        if not image_path.is_file():
-            image_path = ASSETS / 'splash_juegos_torrent.png' 
-        if image_path.is_file() and Image is not None and ImageTk is not None:
+        self.splash_source = None
+        choices = [p for p in (ASSETS / 'splash_opcion_1.png',
+                               ASSETS / 'splash_opcion_2.png') if p.is_file()]
+        if not choices and (ASSETS / 'splash_juegos_torrent.png').is_file():
+            choices = [ASSETS / 'splash_juegos_torrent.png']
+        if choices and Image is not None and ImageTk is not None:
             try:
-                with Image.open(image_path) as picture:
+                with Image.open(random.choice(choices)) as picture:
+                    # La ilustración es una maqueta: se usa como fondo visual.
                     self.splash_source = picture.convert('RGB')
-            except (OSError, ValueError):
-                logging.exception('No se pudo abrir la imagen del splash')
-        self.splash_message = 'Conectando con Google Drive...'
-        self.splash_canvas.bind('<Configure>', self._redraw_splash)
-        self._splash_animation = 0
-        self._splash_job = self.after(80, self._animate_splash)
-        self.after_idle(self._redraw_splash)
+                original = self.splash_source
+                # Reconstruir una imagen continua, sin la franja ni la barra
+                # pintadas. Los controles reales se dibujan encima del fondo.
+                ow, oh = original.size
+                top_end = round(oh * .630)
+                bottom_start = round(oh * .775)
+                # Preservar la cabecera y la zona de iconos de la maqueta.
+                top = original.crop((0, 0, ow, top_end))
+                bottom = original.crop((0, bottom_start, ow, oh))
+                top_h = round(top.height * width / ow)
+                bottom_h = round(bottom.height * width / ow)
+                icons_y = height - bottom_h
+                clean = Image.new('RGB', (width, height), '#080f15')
+                clean.paste(top.resize((width, top_h), Image.Resampling.LANCZOS), (0, 0))
+                # Completar el hueco usando la parte inferior de la escena,
+                # evitando cualquier rectángulo grafito opaco sobre el arte.
+                if icons_y > top_h:
+                    strip = top.crop((0, max(0, top.height - round(ow * .12)), ow, top.height))
+                    strip = strip.resize((width, icons_y-top_h), Image.Resampling.LANCZOS)
+                    clean.paste(strip, (0, top_h))
+                clean.paste(bottom.resize((width, bottom_h), Image.Resampling.LANCZOS),
+                            (0, icons_y))
+                # Restaurar los laterales del marco verde en la unión.
+                from PIL import ImageDraw
+                draw = ImageDraw.Draw(clean)
+                for xedge in (42, width-42):
+                    draw.line((xedge, top_h-2, xedge, icons_y+2),
+                              fill='#30d878', width=2)
+                self.splash_photo = ImageTk.PhotoImage(clean, master=self.splash)
+            except Exception:
+                logging.exception('No se pudo abrir el splash')
+        self.splash_message = 'Conectando con Servidor...'
+        self._splash_progress = 8
+        self._splash_target = 24
+        self._splash_job = None
+        self._redraw_splash()
+        self.splash.lift()
+        self.splash.update_idletasks()
+        self._animate_splash()
 
-    def _redraw_splash(self, event=None):
-        if not hasattr(self, 'splash') or not self.splash.winfo_manager():
+    def _redraw_splash(self):
+        if not getattr(self, 'splash', None) or not self.splash.winfo_exists():
             return
         canvas = self.splash_canvas
-        w, h = canvas.winfo_width(), canvas.winfo_height()
-        if w < 2 or h < 2:
-            return
         canvas.delete('all')
-        if self.splash_source is not None and ImageTk is not None:
-            # Reescalar solamente si cambia el tamaño de la ventana.
-            if self._splash_photo_size != (w, h):
-                original = self.splash_source
-                scale = max(w / original.width, h / original.height)
-                sw, sh = max(1, round(original.width * scale)), max(1, round(original.height * scale))
-                resized = original.resize((sw, sh), Image.Resampling.LANCZOS)
-                left, top = (sw-w)//2, (sh-h)//2
-                resized = resized.crop((left, top, left+w, top+h))
-                self.splash_photo = ImageTk.PhotoImage(resized, master=self)
-                self._splash_photo_size = (w, h)
+        w, h = 850, 565
+        if self.splash_photo:
             canvas.create_image(0, 0, image=self.splash_photo, anchor='nw')
         else:
-            canvas.create_text(w//2, h//2-45, text="KALAKA'S SOFT",
+            canvas.create_text(w//2, h//2-65, text="KALAKA'S SOFT",
                                fill=ACCENT, font=('Segoe UI', 25, 'bold'))
-            canvas.create_text(w//2, h//2, text='JUEGOS TORRENT',
+            canvas.create_text(w//2, h//2-15, text='JUEGOS TORRENT',
                                fill=FG, font=('Segoe UI', 35, 'bold'))
-        # Franja de estado legible sobre la ilustración.
-        y = h - 65
-        canvas.create_rectangle(0, y-12, w, h, fill='#10151d', outline='')
-        canvas.create_text(w//2, y+13, text=self.splash_message,
-                           fill=FG, font=('Segoe UI', 12, 'bold'))
-        track_w = min(380, max(100, w-90))
-        x1 = (w-track_w)//2
-        canvas.create_rectangle(x1, y+36, x1+track_w, y+41,
-                                fill='#29394a', outline='')
-        segment = max(36, track_w//4)
-        travel = max(1, track_w-segment)
-        x = x1 + (self._splash_animation % 100) / 99 * travel
-        canvas.create_rectangle(x, y+36, x+segment, y+41,
-                                fill=ACCENT, outline='')
+        # Texto y barra transparentes: se dibujan sobre la imagen, sin panel opaco.
+        canvas.create_text(w//2, 369, text=self.splash_message,
+                           fill='#f0f3f8', font=('Segoe UI', 12, 'bold'))
+        x1, x2, y1, y2 = 160, w-160, 392, 407
+        # Dibujar cada cápsula como UNA línea con extremos ROUND.
+        # Evita uniones irregulares entre óvalos y rectángulos.
+        cy = (y1 + y2) / 2
+        radius = (y2 - y1) / 2
+        left_center, right_center = x1 + radius, x2 - radius
+        canvas.create_line(left_center, cy, right_center, cy,
+                           fill='#438d69', width=15, capstyle=tk.ROUND)
+        canvas.create_line(left_center, cy, right_center, cy,
+                           fill='#25323b', width=13, capstyle=tk.ROUND)
+        progress = max(0, min(100, self._splash_progress)) / 100
+        if progress > 0:
+            # El relleno también es un solo trazo, sin piezas superpuestas.
+            fill_left = x1 + 5
+            fill_right = x2 - 5
+            length = (fill_right - fill_left) * progress
+            fill_radius = 4.5
+            start = fill_left + fill_radius
+            end = max(start, fill_left + length - fill_radius)
+            canvas.create_line(start, cy, end, cy,
+                               fill='#4cdb8d', width=9, capstyle=tk.ROUND)
+        canvas.create_text(w//2, 423, text=f'{int(self._splash_progress)}%',
+                           fill='#9eddb8', font=('Segoe UI', 9, 'bold'))
 
     def _animate_splash(self):
         self._splash_job = None
-        if not hasattr(self, 'splash') or not self.splash.winfo_manager():
+        if not getattr(self, 'splash', None) or not self.splash.winfo_exists():
             return
-        self._splash_animation = (self._splash_animation + 3) % 100
-        self._redraw_splash()
-        self._splash_job = self.after(65, self._animate_splash)
+        if self._splash_progress < self._splash_target:
+            self._splash_progress = min(self._splash_target, self._splash_progress + 1)
+            self._redraw_splash()
+        self._splash_job = self.after(75, self._animate_splash)
 
     def show_catalog_loading(self):
-        """Muestra el splash para la carga inicial o actualización manual."""
-        if hasattr(self, 'splash'):
-            self.splash_message = 'Conectando con Google Drive...'
-            self.splash.place(x=0, y=0, relwidth=1, relheight=1)
-            self.splash.lift()
-            if self._splash_job is None:
-                self._animate_splash()
+        """Al refrescar, usar estado de la biblioteca sin taparla con un splash."""
+        if self._initial_splash and self.splash.winfo_exists():
+            self.splash_message = 'Conectando con Servidor...'
+            self._splash_target = max(self._splash_target, 35)
+            self._redraw_splash()
 
     def hide_catalog_loading(self):
-        """Oculta el splash cuando las tarjetas locales están preparadas."""
-        if not hasattr(self, 'splash'):
-            return
-        if self._splash_job is not None:
-            self.after_cancel(self._splash_job)
-            self._splash_job = None
-        self.splash.place_forget()
+        """Abrir la biblioteca maximizada cuando terminó de crear las tarjetas."""
+        if self._initial_splash:
+            self._initial_splash = False
+            if self._splash_job is not None:
+                self.after_cancel(self._splash_job)
+                self._splash_job = None
+            if self.splash.winfo_exists():
+                self.splash.destroy()
+            self.deiconify()
+            try:
+                self.state('zoomed')
+            except tk.TclError:
+                pass
+            self.after_idle(self._schedule_startup_split)
 
     def _on_window_mapped(self, event):
         """El HWND de Windows ya existe al recibir Map."""
@@ -1913,6 +1955,7 @@ class App(tk.Tk):
     def catalog_loaded(self, games, offline=False):
         if hasattr(self, 'splash'):
             self.splash_message = 'Preparando carátulas y biblioteca...'
+            self._splash_target = 90
             self._redraw_splash()
         self.catalog_loading = False
         self.catalog_error = False
@@ -1941,7 +1984,13 @@ class App(tk.Tk):
         self.render_games()
         self.schedule_remote_assets()
         # Mostrar la biblioteca únicamente cuando se crearon las tarjetas.
-        self.after_idle(self.hide_catalog_loading)
+        if self._initial_splash:
+            self._splash_progress = 100
+            self._redraw_splash()
+            elapsed_ms = int((__import__('time').monotonic() - self._splash_started_at) * 1000)
+            self.after(max(250, 1800 - elapsed_ms), self.hide_catalog_loading)
+        else:
+            self.after_idle(self.hide_catalog_loading)
 
     def catalog_failed(self, msg):
         self.hide_catalog_loading()
