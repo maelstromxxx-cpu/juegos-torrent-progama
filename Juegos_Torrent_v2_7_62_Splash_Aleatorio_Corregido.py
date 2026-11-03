@@ -1385,17 +1385,32 @@ class App(tk.Tk):
         self.splash_canvas.pack(fill='both', expand=True)
         self.splash_photo = None
         self.splash_source = None
-        # Fondos completos, sin textos ni barras pintados. NO recortar ni pegar franjas.
-        choices = [p for p in (ASSETS / 'splash_fondo_limpio_1.png',
-                               ASSETS / 'splash_fondo_limpio_2.png') if p.is_file()]
+        # Buscar todas las opciones disponibles, sin excluir nombres por número.
+        # Para las ilustraciones antiguas 1 y 2, utilizar las versiones limpias
+        # (sin barra estática) cuando estén presentes.
+        choices = []
+        for path in sorted(ASSETS.glob('splash_opcion_*.png')):
+            suffix = path.stem.removeprefix('splash_opcion_')
+            clean_version = ASSETS / f'splash_fondo_limpio_{suffix}.png'
+            choices.append(clean_version if clean_version.is_file() else path)
+        # También reconocer imágenes limpias si no existe su splash_opcion_N.
+        for clean_version in sorted(ASSETS.glob('splash_fondo_limpio_*.png')):
+            suffix = clean_version.stem.removeprefix('splash_fondo_limpio_')
+            if not (ASSETS / f'splash_opcion_{suffix}.png').is_file():
+                choices.append(clean_version)
+        if not choices and (ASSETS / 'splash_juegos_torrent.png').is_file():
+            choices = [ASSETS / 'splash_juegos_torrent.png']
         if choices and Image is not None and ImageTk is not None:
             try:
-                with Image.open(random.choice(choices)) as picture:
-                    background = picture.convert('RGB').resize(
-                        (width, height), Image.Resampling.LANCZOS)
-                self.splash_photo = ImageTk.PhotoImage(background, master=self.splash)
+                chosen = random.choice(choices)
+                with Image.open(chosen) as picture:
+                    original = picture.convert('RGB')
+                self.splash_source = original
+                # UNA imagen de fondo, sin cortar, pegar ni duplicar franjas.
+                clean = original.resize((width, height), Image.Resampling.LANCZOS)
+                self.splash_photo = ImageTk.PhotoImage(clean, master=self.splash)
             except Exception:
-                logging.exception('No se pudo abrir el fondo del splash')
+                logging.exception('No se pudo abrir el splash')
         self.splash_message = 'Conectando con Servidor...'
         self._splash_progress = 8
         self._splash_target = 24
@@ -1419,36 +1434,30 @@ class App(tk.Tk):
             canvas.create_text(w//2, h//2-15, text='JUEGOS TORRENT',
                                fill=FG, font=('Segoe UI', 35, 'bold'))
         # Texto y barra transparentes: se dibujan sobre la imagen, sin panel opaco.
-        canvas.create_text(w//2, 382, text=self.splash_message,
+        canvas.create_text(w//2, 369, text=self.splash_message,
                            fill='#f0f3f8', font=('Segoe UI', 12, 'bold'))
-        x1, x2, y1, y2 = 160, w-160, 402, 417
-        # Barra tipo cápsula: pista y relleno con extremos redondeados.
-        def capsule(left, top, right, bottom, color):
-            diameter = bottom - top
-            radius = diameter / 2
-            if right - left <= diameter:
-                # Para porcentajes mínimos, mantener una punta suave sin esquinas.
-                canvas.create_oval(left, top, left + diameter, bottom,
-                                  fill=color, outline='')
-                return
-            canvas.create_rectangle(left + radius, top, right - radius, bottom,
-                                    fill=color, outline='')
-            canvas.create_oval(left, top, left + diameter, bottom,
-                              fill=color, outline='')
-            canvas.create_oval(right - diameter, top, right, bottom,
-                              fill=color, outline='')
-
-        capsule(x1, y1, x2, y2, '#438d69')
-        capsule(x1 + 1, y1 + 1, x2 - 1, y2 - 1, '#25323b')
-        inner_left, inner_right = x1 + 3, x2 - 3
-        inner_top, inner_bottom = y1 + 3, y2 - 3
+        x1, x2, y1, y2 = 160, w-160, 392, 407
+        # Dibujar cada cápsula como UNA línea con extremos ROUND.
+        # Evita uniones irregulares entre óvalos y rectángulos.
+        cy = (y1 + y2) / 2
+        radius = (y2 - y1) / 2
+        left_center, right_center = x1 + radius, x2 - radius
+        canvas.create_line(left_center, cy, right_center, cy,
+                           fill='#438d69', width=15, capstyle=tk.ROUND)
+        canvas.create_line(left_center, cy, right_center, cy,
+                           fill='#25323b', width=13, capstyle=tk.ROUND)
         progress = max(0, min(100, self._splash_progress)) / 100
-        fill_width = (inner_right - inner_left) * progress
-        if fill_width > 0:
-            capsule(inner_left, inner_top,
-                    inner_left + max(inner_bottom - inner_top, fill_width),
-                    inner_bottom, '#4cdb8d')
-        canvas.create_text(w//2, 432, text=f'{int(self._splash_progress)}%',
+        if progress > 0:
+            # El relleno también es un solo trazo, sin piezas superpuestas.
+            fill_left = x1 + 5
+            fill_right = x2 - 5
+            length = (fill_right - fill_left) * progress
+            fill_radius = 4.5
+            start = fill_left + fill_radius
+            end = max(start, fill_left + length - fill_radius)
+            canvas.create_line(start, cy, end, cy,
+                               fill='#4cdb8d', width=9, capstyle=tk.ROUND)
+        canvas.create_text(w//2, 423, text=f'{int(self._splash_progress)}%',
                            fill='#9eddb8', font=('Segoe UI', 9, 'bold'))
 
     def _animate_splash(self):

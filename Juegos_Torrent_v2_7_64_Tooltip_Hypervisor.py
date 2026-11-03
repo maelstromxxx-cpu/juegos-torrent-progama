@@ -588,7 +588,7 @@ def find_game_data(name):
                     'puntuación': 'puntuacion', 'puntuacion': 'puntuacion',
                     'metacritic': 'metacritic',
                     'repacker': 'repacker', 'repack': 'repacker',
-                    'repackeador': 'repacker', 'port': 'port'}
+                    'repackeador': 'repacker', 'port': 'port', 'crack': 'crack'}
             for line in raw.splitlines():
                 key, sep, value = line.partition(':')
                 if sep and key.strip().casefold() in keys:
@@ -636,7 +636,34 @@ def score_color(score):
     return '#b43d43'
 
 
-def load_scored_cover(path, score, max_width, max_height, master=None, owned=False):
+def is_hypervisor(data):
+    """Detecta el indicador Crack: Hypervisor sin importar mayúsculas."""
+    return 'hypervisor' in str(data.get('crack', '')).casefold()
+
+
+def draw_hypervisor_badge(picture):
+    """Sello H rojo sobre la esquina superior derecha de la carátula."""
+    draw = ImageDraw.Draw(picture)
+    size = max(18, min(33, round(picture.width * 0.23)))
+    margin = max(3, round(size * .13))
+    x1, y1 = picture.width - size - margin, margin
+    x2, y2 = picture.width - margin, margin + size
+    draw.rounded_rectangle((x1, y1, x2, y2), radius=max(4, size//5),
+                           fill='#c4141e', outline='#fff4f4', width=2)
+    try:
+        font = ImageFont.truetype('arialbd.ttf', round(size * .76))
+    except OSError:
+        try:
+            font = ImageFont.truetype('DejaVuSans-Bold.ttf', round(size * .73))
+        except OSError:
+            font = ImageFont.load_default()
+    bounds = draw.textbbox((0, 0), 'H', font=font)
+    tx = (x1+x2-(bounds[2]-bounds[0]))/2-bounds[0]
+    ty = (y1+y2-(bounds[3]-bounds[1]))/2-bounds[1]
+    draw.text((tx, ty), 'H', font=font, fill='white')
+
+
+def load_scored_cover(path, score, max_width, max_height, master=None, owned=False, hypervisor=False):
     """Compone la puntuación en la miniatura, evitando widgets superpuestos que parpadean."""
     if not path or Image is None or ImageTk is None:
         return load_local_image(path, max_width, max_height, master=master)
@@ -684,6 +711,8 @@ def load_scored_cover(path, score, max_width, max_height, master=None, owned=Fal
             draw.rounded_rectangle((4, 4, 23, 23), radius=5,
                                    fill='#176b46', outline='#8df0b5', width=1)
             draw.line([(8, 14), (12, 18), (19, 9)], fill='white', width=2, joint='curve')
+        if hypervisor:
+            draw_hypervisor_badge(picture)
         return ImageTk.PhotoImage(picture, master=master)
     except Exception:
         return load_local_image(path, max_width, max_height, master=master)
@@ -989,7 +1018,7 @@ class BotonDescargaModerno(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.56')
+        self.title('Juegos Torrent 2.7.64')
         self.withdraw()  # La biblioteca se muestra al terminar la carga inicial.
         self._initial_splash = True
         self._startup_split_job = None
@@ -1011,6 +1040,9 @@ class App(tk.Tk):
         self.card_widgets = {}  # Tarjetas reutilizables: no destruir al cambiar columnas.
         self.card_parts = {}
         self.hovered_card = None
+        self.hypervisor_tip = None
+        self.hypervisor_tip_job = None
+        self.hypervisor_tip_widget = None
         self.cover_photo_cache = {}  # Miniaturas compuestas reutilizadas por archivo/estado.
         self.resize_layout_job = None
         self.visible_game_names = []
@@ -1225,6 +1257,8 @@ class App(tk.Tk):
                                      fg=MUTED, bg=CARD, font=('Segoe UI', 11), cursor='hand2')
         self.detail_cover.pack(pady=(0, 0))
         self.detail_cover.bind('<Button-1>', lambda _: self.open_cover_preview())
+        self.detail_cover.bind('<Enter>', lambda event: self.schedule_hypervisor_tip(event.widget, self.selected['name'] if self.selected else None))
+        self.detail_cover.bind('<Leave>', self.hide_hypervisor_tip)
         self.screenshots_column = tk.Frame(self.media_row, bg=PANEL)
         self.screenshots_column.pack(side='left', fill='both', expand=True, anchor='n')
         self.screenshots_title = tk.Label(self.screenshots_column, text='', fg=ACCENT, bg=PANEL,
@@ -1385,43 +1419,29 @@ class App(tk.Tk):
         self.splash_canvas.pack(fill='both', expand=True)
         self.splash_photo = None
         self.splash_source = None
-        choices = [p for p in (ASSETS / 'splash_opcion_1.png',
-                               ASSETS / 'splash_opcion_2.png') if p.is_file()]
+        # Buscar todas las opciones disponibles, sin excluir nombres por número.
+        # Para las ilustraciones antiguas 1 y 2, utilizar las versiones limpias
+        # (sin barra estática) cuando estén presentes.
+        choices = []
+        for path in sorted(ASSETS.glob('splash_opcion_*.png')):
+            suffix = path.stem.removeprefix('splash_opcion_')
+            clean_version = ASSETS / f'splash_fondo_limpio_{suffix}.png'
+            choices.append(clean_version if clean_version.is_file() else path)
+        # También reconocer imágenes limpias si no existe su splash_opcion_N.
+        for clean_version in sorted(ASSETS.glob('splash_fondo_limpio_*.png')):
+            suffix = clean_version.stem.removeprefix('splash_fondo_limpio_')
+            if not (ASSETS / f'splash_opcion_{suffix}.png').is_file():
+                choices.append(clean_version)
         if not choices and (ASSETS / 'splash_juegos_torrent.png').is_file():
             choices = [ASSETS / 'splash_juegos_torrent.png']
         if choices and Image is not None and ImageTk is not None:
             try:
-                with Image.open(random.choice(choices)) as picture:
-                    # La ilustración es una maqueta: se usa como fondo visual.
-                    self.splash_source = picture.convert('RGB')
-                original = self.splash_source
-                # Reconstruir una imagen continua, sin la franja ni la barra
-                # pintadas. Los controles reales se dibujan encima del fondo.
-                ow, oh = original.size
-                top_end = round(oh * .630)
-                bottom_start = round(oh * .775)
-                # Preservar la cabecera y la zona de iconos de la maqueta.
-                top = original.crop((0, 0, ow, top_end))
-                bottom = original.crop((0, bottom_start, ow, oh))
-                top_h = round(top.height * width / ow)
-                bottom_h = round(bottom.height * width / ow)
-                icons_y = height - bottom_h
-                clean = Image.new('RGB', (width, height), '#080f15')
-                clean.paste(top.resize((width, top_h), Image.Resampling.LANCZOS), (0, 0))
-                # Completar el hueco usando la parte inferior de la escena,
-                # evitando cualquier rectángulo grafito opaco sobre el arte.
-                if icons_y > top_h:
-                    strip = top.crop((0, max(0, top.height - round(ow * .12)), ow, top.height))
-                    strip = strip.resize((width, icons_y-top_h), Image.Resampling.LANCZOS)
-                    clean.paste(strip, (0, top_h))
-                clean.paste(bottom.resize((width, bottom_h), Image.Resampling.LANCZOS),
-                            (0, icons_y))
-                # Restaurar los laterales del marco verde en la unión.
-                from PIL import ImageDraw
-                draw = ImageDraw.Draw(clean)
-                for xedge in (42, width-42):
-                    draw.line((xedge, top_h-2, xedge, icons_y+2),
-                              fill='#30d878', width=2)
+                chosen = random.choice(choices)
+                with Image.open(chosen) as picture:
+                    original = picture.convert('RGB')
+                self.splash_source = original
+                # UNA imagen de fondo, sin cortar, pegar ni duplicar franjas.
+                clean = original.resize((width, height), Image.Resampling.LANCZOS)
                 self.splash_photo = ImageTk.PhotoImage(clean, master=self.splash)
             except Exception:
                 logging.exception('No se pudo abrir el splash')
@@ -1684,11 +1704,12 @@ class App(tk.Tk):
         except OSError:
             return None
         score = game_score(self.game_metadata.get(name, {}))
-        key = (str(path), stamp, score, name in self.owned_games)
+        hypervisor = is_hypervisor(self.game_metadata.get(name, {}))
+        key = (str(path), stamp, score, name in self.owned_games, hypervisor)
         photo = self.cover_photo_cache.get(key)
         if photo is None:
             photo = load_scored_cover(path, score, 140, 185, master=self,
-                                      owned=name in self.owned_games)
+                                      owned=name in self.owned_games, hypervisor=hypervisor)
             if photo is not None:
                 self.cover_photo_cache[key] = photo
         return photo
@@ -1882,6 +1903,9 @@ class App(tk.Tk):
                     self.update_card_cover(game_name)
         if any(p.startswith('datos/') and p.lower().endswith('.txt') for p in changed):
             self.render_games()
+            for game_name in list(self.cover_cards):
+                if any(p.startswith('datos/') and Path(p).stem in image_stems(game_name) for p in changed):
+                    self.update_card_cover(game_name)
         if self.selected:
             game = self.selected
             stems = set(image_stems(game['name']))
@@ -1894,6 +1918,10 @@ class App(tk.Tk):
                    and Path(p).parts[1] in stems for p in changed):
                 self.render_screenshots(game)
             if any(p.startswith('datos/') and Path(p).stem in stems for p in changed):
+                photo = self.load_cover(game['name'], 225, 315)
+                self.detail_cover.config(image=photo if photo is not None else '',
+                                         text='' if photo else 'SIN CARÁTULA')
+                self.detail_cover.image = photo
                 self.show_game_data(game)
             if any(p.startswith('sinopsis/') and Path(p).stem in stems for p in changed):
                 self.show_synopsis(game)
@@ -2002,7 +2030,8 @@ class App(tk.Tk):
         messagebox.showerror('JUEGOS - Error de conexión', msg)
 
     def load_cover(self, name, max_width, max_height):
-        return load_local_image(find_cover(name), max_width, max_height, master=self)
+        return load_scored_cover(find_cover(name), None, max_width, max_height, master=self,
+                                 hypervisor=is_hypervisor(find_game_data(name)))
 
     def open_cover_preview(self):
         if self.selected:
@@ -2402,6 +2431,8 @@ class App(tk.Tk):
                     widget.bind('<Button-1>', lambda _, g=game: self.select_game(g))
                     widget.bind('<Enter>', lambda _, n=name: self.set_card_hover(n, True))
                     widget.bind('<Leave>', lambda event, n=name: self.card_pointer_leave(n, event))
+                cover.bind('<Enter>', lambda event, n=name: self.schedule_hypervisor_tip(event.widget, n), add='+')
+                cover.bind('<Leave>', self.hide_hypervisor_tip, add='+')
                 self.card_widgets[name] = card
                 self.card_parts[name] = (cover, title)
                 self.paint_card(name)
@@ -2531,7 +2562,47 @@ class App(tk.Tk):
             self.repacker_tooltip.destroy()
             self.repacker_tooltip = None
 
+    def schedule_hypervisor_tip(self, widget, name):
+        """Tooltip discreto al pasar por una carátula con Crack: Hypervisor."""
+        self.hide_hypervisor_tip()
+        if not name:
+            return
+        data = self.game_metadata.get(name, {})
+        if not is_hypervisor(data):
+            data = find_game_data(name)
+        if not is_hypervisor(data):
+            return
+        self.hypervisor_tip_widget = widget
+        self.hypervisor_tip_job = self.after(450, lambda w=widget: self.show_hypervisor_tip(w))
+
+    def show_hypervisor_tip(self, widget):
+        self.hypervisor_tip_job = None
+        if not widget.winfo_exists() or not widget.winfo_ismapped():
+            return
+        tip = tk.Toplevel(self)
+        tip.withdraw()
+        tip.overrideredirect(True)
+        tip.configure(bg='#a92323')
+        tk.Label(tip, text='Usa Hypervisor', bg='#a92323', fg='white',
+                 font=('Segoe UI', 10, 'bold'), padx=10, pady=5).pack(padx=1, pady=1)
+        tip.update_idletasks()
+        x = min(self.winfo_pointerx() + 14, self.winfo_screenwidth() - tip.winfo_reqwidth() - 8)
+        y = min(self.winfo_pointery() + 18, self.winfo_screenheight() - tip.winfo_reqheight() - 8)
+        tip.geometry(f'+{max(0, x)}+{max(0, y)}')
+        self.hypervisor_tip = tip
+        tip.deiconify()
+
+    def hide_hypervisor_tip(self, event=None):
+        if self.hypervisor_tip_job is not None:
+            self.after_cancel(self.hypervisor_tip_job)
+            self.hypervisor_tip_job = None
+        if self.hypervisor_tip is not None:
+            self.hypervisor_tip.destroy()
+            self.hypervisor_tip = None
+        self.hypervisor_tip_widget = None
+
     def select_game(self, game):
+        self.hide_hypervisor_tip()
         # Primera selección: retiramos la bienvenida y dejamos la ficha intacta.
         if self.welcome.winfo_manager():
             self.welcome.place_forget()
