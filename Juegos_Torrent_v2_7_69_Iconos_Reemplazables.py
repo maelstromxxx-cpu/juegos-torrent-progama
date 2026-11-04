@@ -112,17 +112,43 @@ class BarraDesplazamiento(tk.Canvas):
             self.command('moveto', max(0, min(1-span, new_first)))
 
 
+def cargar_icono_ui(nombre, tamano, master):
+    """Carga PNG externo y lo ajusta al tamaño indicado; permite reemplazarlo sin editar código."""
+    ruta = ASSETS / nombre
+    if not ruta.is_file():
+        return None
+    try:
+        if Image is not None and ImageTk is not None:
+            with Image.open(ruta) as original:
+                icono = original.convert('RGBA')
+                icono.thumbnail((tamano, tamano), Image.Resampling.LANCZOS)
+                lienzo = Image.new('RGBA', (tamano, tamano), (0, 0, 0, 0))
+                lienzo.alpha_composite(icono, ((tamano-icono.width)//2, (tamano-icono.height)//2))
+            return ImageTk.PhotoImage(lienzo, master=master)
+        # Si Pillow no está instalado, Tk puede cargar PNG, aunque sin reescalado fino.
+        return tk.PhotoImage(file=str(ruta), master=master)
+    except Exception as exc:
+        logging.warning('No se pudo cargar el icono %s: %s', ruta, exc)
+        return None
+
+
 class BotonElegante(tk.Canvas):
-    """Botón de barra compacto con fondo redondeado y respuesta al teclado."""
-    def __init__(self, parent, text, command, width=157, height=30):
+    """Botón compacto con iconos PNG suavizados, borde y estados interactivos."""
+    def __init__(self, parent, text, command, width=157, height=34, icon=None):
         super().__init__(parent, width=width, height=height, bg=BG,
                          highlightthickness=0, bd=0, cursor='hand2', takefocus=1)
         self.label = text
         self.command = command
+        self.icon = icon
+        self.icon_images = {}
+        if icon:
+            self.icon_images["normal"] = cargar_icono_ui(f"icono_{icon}.png", 18, self)
         self.hover = False
+        self.pressed = False
         self.bind('<Enter>', self._enter)
         self.bind('<Leave>', self._leave)
-        self.bind('<Button-1>', lambda _: self.command())
+        self.bind('<ButtonPress-1>', self._press)
+        self.bind('<ButtonRelease-1>', self._release)
         self.bind('<Return>', lambda _: self.command())
         self.bind('<space>', lambda _: self.command())
         self.bind('<Configure>', lambda _: self._paint())
@@ -134,16 +160,50 @@ class BotonElegante(tk.Canvas):
 
     def _leave(self, _event):
         self.hover = False
+        self.pressed = False
         self._paint()
+
+    def _press(self, _event):
+        self.focus_set()
+        self.pressed = True
+        self._paint()
+
+    def _release(self, event):
+        was_pressed = self.pressed
+        self.pressed = False
+        self._paint()
+        if was_pressed and 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height():
+            self.command()
+
+    def _draw_icon(self, x, y, color):
+        # Imágenes PNG reales, suavizadas a 14 px; Tkinter no dibuja sus curvas.
+        image = self.icon_images.get('normal')
+        if image is not None:
+            self.create_image(round(x), round(y), image=image, anchor='center')
 
     def _paint(self):
         self.delete('all')
         w = max(self.winfo_width(), int(self.cget('width')))
         h = max(self.winfo_height(), int(self.cget('height')))
-        SelectorElegante._rounded(self, self, 1, 1, w-1, h-1, 8,
-                                  PANEL if self.hover else CARD)
-        self.create_text(w/2, h/2-1, text=self.label, fill=FG,
-                         font=('Segoe UI', 9, 'bold'))
+        if self.pressed:
+            fill, border = '#1C3440', ACCENT
+        elif self.hover:
+            fill, border = '#304457', ACCENT
+        else:
+            fill, border = '#29384A', '#50627B'
+        SelectorElegante._rounded(self, self, 1, 1, w-1, h-1, 9, border)
+        SelectorElegante._rounded(self, self, 2, 2, w-2, h-2, 8, fill)
+        font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
+        text_width = font.measure(self.label)
+        icon_width = 18 if self.icon_images.get('normal') is not None else 0
+        gap = 6 if icon_width else 0
+        group_width = icon_width + gap + text_width
+        start = (w-group_width)/2
+        center_y = h/2 + (1 if self.pressed else 0)
+        if icon_width:
+            self._draw_icon(start+icon_width/2, center_y, '#B9F5CE' if self.hover else '#D4E8FF')
+        self.create_text(start+icon_width+gap, center_y, text=self.label,
+                         anchor='w', fill=FG, font=font)
 
 
 class SelectorElegante(tk.Frame):
@@ -1083,9 +1143,9 @@ class App(tk.Tk):
             tk.Label(top, text='Juegos Torrent', fg=ACCENT, bg=BG,
                      font=('Segoe UI', 24, 'bold')).pack(side='left')
         BotonElegante(top, 'Actualizar catálogo', self.load_catalog,
-                      width=157, height=30).pack(side='right')
-        BotonElegante(top, '📖 GUÍAS', self.open_help_center,
-                      width=112, height=30).pack(side='right', padx=(0, 10))
+                      width=180, height=34, icon='refresh').pack(side='right')
+        BotonElegante(top, 'Guías', self.open_help_center,
+                      width=112, height=34, icon='book').pack(side='right', padx=(0, 10))
         # Buscador con contorno redondeado, a juego con los selectores.
         search_area = tk.Frame(top, bg=BG, width=290, height=30)
         search_area.pack(side='right', padx=12)
@@ -1100,10 +1160,14 @@ class App(tk.Tk):
             h = max(30, search_bg.winfo_height())
             SelectorElegante._rounded(self, search_bg, 1, 1, w-1, h-1,
                                       8, PANEL)
-            search_bg.create_oval(15, 10, 22, 17, outline=ACCENT, width=1.5)
-            search_bg.create_line(21, 17, 25, 21, fill=ACCENT,
-                                  width=1.5, capstyle='round')
+            if self.icono_busqueda is not None:
+                search_bg.create_image(20, h/2, image=self.icono_busqueda, anchor='center')
+            else:
+                search_bg.create_oval(15, 10, 22, 17, outline=ACCENT, width=1.5)
+                search_bg.create_line(21, 17, 25, 21, fill=ACCENT,
+                                      width=1.5, capstyle='round')
 
+        self.icono_busqueda = cargar_icono_ui('icono_buscar.png', 18, self)
         search_bg.bind('<Configure>', paint_search)
         paint_search()
         searchbox = tk.Entry(search_area, textvariable=self.search,
