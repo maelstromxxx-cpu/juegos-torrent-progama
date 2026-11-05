@@ -537,18 +537,30 @@ def drive_buscar_carpeta(sesion, nombre):
     return drive_listar(sesion, q)
 
 
+def centrar_ventana(ventana, ancho, alto):
+    """Ubica una ventana Tk/Toplevel en el centro de la pantalla."""
+    ventana.update_idletasks()
+    pantalla_ancho = ventana.winfo_screenwidth()
+    pantalla_alto = ventana.winfo_screenheight()
+    ancho = min(ancho, pantalla_ancho)
+    alto = min(alto, pantalla_alto)
+    x = max(0, (pantalla_ancho - ancho) // 2)
+    y = max(0, (pantalla_alto - alto) // 2)
+    ventana.geometry(f'{ancho}x{alto}+{x}+{y}')
+
+
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Kalaka’s Soft - Generador v13.5.24 · Traducción Gemini')
-        self.geometry('1750x900')
+        self.title('Kalaka’s Soft - Generador v13.5.26 · Traducción Gemini')
+        centrar_ventana(self, 1750, 900)
         self.minsize(1100, 680)
         try:
             self.configuracion = json.loads(CONFIG.read_text(encoding='utf-8'))
             if not isinstance(self.configuracion, dict): self.configuracion = {}
         except (OSError, ValueError):
             self.configuracion = {}
-        self._gemini_api_key = os.environ.get('GEMINI_API_KEY', '').strip()
+        self._gemini_api_key = (os.environ.get('GEMINI_API_KEY') or self.configuracion.get('GEMINI_API_KEY', '')).strip()
         self.nombre_juego = tk.StringVar()
         self.paneles = []
         self.imagenes_capturas = []
@@ -685,7 +697,7 @@ class Generador(tk.Tk):
             return
         ventana = tk.Toplevel(self)
         ventana.title(f'Traducir {seccion} al español — vista previa')
-        ventana.geometry('850x640')
+        centrar_ventana(ventana, 850, 640)
         ventana.transient(self)
         ventana.columnconfigure(0, weight=1)
         ventana.rowconfigure(2, weight=1)
@@ -792,11 +804,12 @@ class Generador(tk.Tk):
                 return
             if motor == 'Gemini' and not self._gemini_api_key:
                 clave = simpledialog.askstring('Clave API de Gemini',
-                    'Pegá tu clave API de Google AI Studio.\nSe conservará solo en memoria hasta cerrar el programa.',
+                    'Pegá tu clave API de Google AI Studio.\nSe guardará en la configuración local para las próximas sesiones.',
                     parent=ventana, show='*')
                 if not clave or not clave.strip():
                     return
                 self._gemini_api_key = clave.strip()
+                self.guardar_configuracion()
             estado.set(f'Traduciendo con {motor}... (requiere Internet)')
             for boton in (con_gemini, con_mymemory, reintentar):
                 boton.configure(state='disabled')
@@ -828,7 +841,7 @@ class Generador(tk.Tk):
         """Buscador opcional. Nunca modifica archivos hasta GUARDAR TODOS."""
         ventana = tk.Toplevel(self)
         ventana.title('Kalaka’s Soft · Importar metadatos de Steam')
-        ventana.geometry('980x690')
+        centrar_ventana(ventana, 980, 690)
         ventana.minsize(720, 500)
         ventana.transient(self)
         estado = tk.StringVar(value='Buscá un juego por nombre, AppID o URL de Steam.')
@@ -1152,7 +1165,7 @@ class Generador(tk.Tk):
         ventana = tk.Toplevel(self)
         self.ventana_ids = ventana
         ventana.title('Generador de ID y editor de catálogo')
-        ventana.geometry('1320x700')
+        centrar_ventana(ventana, 1320, 700)
         ventana.minsize(980, 530)
         ventana.transient(self)
         cuerpo = ttk.Frame(ventana, padding=12)
@@ -1219,7 +1232,7 @@ class Generador(tk.Tk):
                 return candidatos[0]
             dialogo = tk.Toplevel(ventana)
             dialogo.title('Drive: elegir ' + tipo)
-            dialogo.geometry('760x330')
+            centrar_ventana(dialogo, 760, 330)
             dialogo.transient(ventana)
             ttk.Label(dialogo, text='Hay varios resultados para ' + tipo + '. Elegí el correcto:', padding=10).pack(anchor='w')
             listado = tk.Listbox(dialogo, exportselection=False)
@@ -1439,7 +1452,7 @@ class Generador(tk.Tk):
                 if len(coincidencias) > 1:
                     seleccion = tk.Toplevel(ventana)
                     seleccion.title('Elegir versión del juego')
-                    seleccion.geometry('780x340')
+                    centrar_ventana(seleccion, 780, 340)
                     seleccion.transient(ventana)
                     ttk.Label(seleccion, text='Hay varias entradas con ese título. Elegí debajo de cuál insertar el update:', padding=10).pack(anchor='w')
                     lista = tk.Listbox(seleccion, exportselection=False, font=('Consolas', 10))
@@ -1576,7 +1589,7 @@ class Generador(tk.Tk):
         """Busca grids verticales con AppID de Steam, sin abrir páginas externas."""
         ventana = tk.Toplevel(self)
         ventana.title('Kalaka’s Soft · Portadas SteamGridDB')
-        ventana.geometry('850x820')
+        centrar_ventana(ventana, 850, 820)
         ventana.minsize(740, 690)
         ventana.transient(self)
         barra = ttk.Frame(ventana, padding=10)
@@ -1849,7 +1862,7 @@ class Generador(tk.Tk):
     def previsualizar_updates(self, resultados, titulo_juego=''):
         ventana = tk.Toplevel(self)
         ventana.title('Kalaka’s Soft · Vista previa de updates')
-        ventana.geometry('850x600')
+        centrar_ventana(ventana, 850, 600)
         ventana.transient(self)
         ttk.Label(ventana, text=f'Se encontraron {len(resultados)} actualizaciones. Revisá el texto antes de incorporarlo.', padding=10).pack(anchor='w')
         if titulo_juego:
@@ -1880,6 +1893,7 @@ class Generador(tk.Tk):
         datos['CAPTURAS'] = self.ruta_capturas.get().strip()
         datos['PORTADAS'] = self.ruta_portadas.get().strip()
         datos['STEAMGRIDDB_KEY'] = self.sgdb_key.get().strip()
+        datos['GEMINI_API_KEY'] = self._gemini_api_key
         datos['TORRENTS'] = self.ruta_torrents.get().strip()
         datos['CATALOGO'] = self.configuracion.get('CATALOGO', '')
         datos['DRIVE_CREDENTIALS'] = self.configuracion.get('DRIVE_CREDENTIALS', '')

@@ -1,0 +1,1 @@
+HYPERVISOR\n\nPlantilla pendiente de completar con tu tutorial específico.\n\nAntes de realizar cambios en Windows o la virtualización, documentá requisitos, riesgos y cómo revertirlos.
