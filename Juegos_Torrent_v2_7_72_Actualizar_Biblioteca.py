@@ -1091,7 +1091,7 @@ class BotonDescargaModerno(tk.Canvas):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Juegos Torrent 2.7.64')
+        self.title('Juegos Torrent 2.7.72')
         self.withdraw()  # La biblioteca se muestra al terminar la carga inicial.
         self._initial_splash = True
         self._startup_split_job = None
@@ -2023,7 +2023,7 @@ class App(tk.Tk):
         self.catalog_loading = True
         self.catalog_error = False
         self.show_catalog_loading()
-        self.status.config(text='Consultando Catalogo Remoto')
+        self.status.config(text='Consultando Catalogo Remoto...')
         if not self.games:
             self.render_games()
 
