@@ -25,6 +25,19 @@ from urllib.request import Request, urlopen
 
 CATALOG_ID = '1WP2cyZ3ovEHqs6S18bi49U41EkrG0Uld'
 CATALOG_URL = f'https://drive.google.com/uc?export=download&id={CATALOG_ID}'
+# Pegá aquí la URL /exec de tu implementación de Google Apps Script.
+REPORTES_URL = 'https://script.google.com/macros/s/AKfycbyu29o0sIc8NCqKLThksldrT1k-4glYP9_XCZMBuUzGi-Lf3XbSylMtgNE2HfnW4l4Mqw/exec'
+REPORTES_MOTIVOS = (
+    'Falta el Torrent / Torrent incorrecto',
+    'Torrent sin seeds',
+    'Enlace caducado / Enlace incorrecto (update, pack, fix, etc.)',
+    'Error al descargar el juego',
+    'Archivo dañado / Error al descomprimir',
+    'El juego no funciona',
+    'Problema con la instalación',
+    'Instrucciones incorrectas o incompletas',
+    'Otro problema',
+)
 CATALOG_CACHE_NAME = 'catalogo_cache.txt'
 BASE = Path(__file__).resolve().parent
 CATALOG_CACHE = BASE / CATALOG_CACHE_NAME
@@ -1403,6 +1416,13 @@ class App(tk.Tk):
                                       relief='flat', padx=14, pady=7, cursor='hand2',
                                       font=('Segoe UI', 10, 'bold'))
         self.guide_button.place_forget()
+        self.report_button = tk.Button(
+            self.downloads_tab, text='🚩  Reportar problema',
+            command=self.open_report_dialog, state='disabled',
+            bg=CARD, fg='#ffcf91', activebackground='#34445a',
+            activeforeground='#ffffff', relief='flat', bd=0,
+            cursor='hand2', font=('Segoe UI', 10, 'bold'), padx=14, pady=9)
+        self.report_button.pack(anchor='e', padx=8, pady=(0, 6))
         self.extras_title = tk.Label(self.downloads_tab, text='', fg=ACCENT, bg=PANEL,
                                      font=('Segoe UI', 12, 'bold'))
         self.extras_title.pack(anchor='w', padx=8, pady=(12, 4))
@@ -2066,6 +2086,7 @@ class App(tk.Tk):
         self.current_repacker = None
         self.redraw_ficha_header()
         self.download_button.config(state='disabled')
+        self.report_button.config(state='disabled')
         self.guide_button.place_forget()
         self.show_text('Seleccioná un juego', 'Las instrucciones aparecerán aquí cuando las solicites.')
         summary = f'{len(self.games)} juegos y {len(games) - len(self.games)} complementos.'
@@ -2689,6 +2710,7 @@ class App(tk.Tk):
         self.detail_title.config(text=clean_title)
         self.download_button.config(state='disabled' if self.busy else 'normal',
                                     text=self.action_label(game, complement=False))
+        self.report_button.config(state='normal')
         self.guide_button.place_forget()
         self.text_request += 1
         self.show_text('Instrucciones / enlaces', 'Elegí «Ver instrucciones» o «Ver enlaces de descarga» para leer un TXT aquí.')
@@ -2737,6 +2759,102 @@ class App(tk.Tk):
                           activeforeground=ACCENT, relief='flat', bd=0,
                           cursor='hand2', font=('Segoe UI', 9)).pack(side='top', pady=(5, 0))
 
+
+    def open_report_dialog(self):
+        """Formulario de reportes de la ficha seleccionada (sin abrir navegador)."""
+        if not self.selected:
+            return
+        game_name = self.selected['name']
+        popup = tk.Toplevel(self)
+        popup.title('Juegos Torrent | Reportar problema')
+        popup.configure(bg=BG)
+        centered_popup(popup, 620, 650)
+        popup.minsize(480, 480)
+        popup.transient(self)
+        popup.grab_set()
+        popup.bind('<Escape>', lambda _event: popup.destroy())
+
+        body = tk.Frame(popup, bg=BG, padx=22, pady=18)
+        body.pack(fill='both', expand=True)
+        tk.Label(body, text='REPORTAR UN PROBLEMA', fg=ACCENT, bg=BG,
+                 font=('Segoe UI', 15, 'bold')).pack(anchor='w')
+        tk.Label(body, text=game_name, fg=FG, bg=BG, wraplength=550,
+                 justify='left', font=('Segoe UI', 11, 'bold')).pack(anchor='w', pady=(8, 15))
+        tk.Label(body, text='Seleccioná el motivo:', fg=MUTED, bg=BG,
+                 font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 6))
+        reason = tk.StringVar(value=REPORTES_MOTIVOS[0])
+        combo = ttk.Combobox(body, textvariable=reason, values=REPORTES_MOTIVOS,
+                             state='readonly', font=('Segoe UI', 10))
+        combo.pack(fill='x', pady=(0, 16))
+        tk.Label(body, text='Comentario adicional (opcional, hasta 500 caracteres):',
+                 fg=MUTED, bg=BG, font=('Segoe UI', 10)).pack(anchor='w', pady=(0, 6))
+        comment = tk.Text(body, height=7, wrap='word', bg='#ffffff', fg='#1c2530',
+                          relief='flat', padx=10, pady=9, font=('Segoe UI', 10))
+        comment.pack(fill='both', expand=True)
+        tk.Label(body, text='Si es un update, pack o fix, indicá cuál falla.',
+                 fg=MUTED, bg=BG, font=('Segoe UI', 9)).pack(anchor='w', pady=(7, 10))
+        status = tk.Label(body, text='', fg=MUTED, bg=BG, anchor='w',
+                          font=('Segoe UI', 9))
+        status.pack(fill='x', pady=(0, 8))
+        actions = tk.Frame(body, bg=BG)
+        actions.pack(fill='x')
+        submit = tk.Button(actions, text='Enviar reporte', bg='#20583f', fg=FG,
+                           activebackground='#307e59', activeforeground=FG,
+                           relief='flat', bd=0, cursor='hand2', padx=17, pady=10,
+                           font=('Segoe UI', 10, 'bold'))
+        submit.pack(side='right')
+        tk.Button(actions, text='Cancelar', command=popup.destroy,
+                  bg=CARD, fg=FG, relief='flat', bd=0, cursor='hand2',
+                  padx=15, pady=10).pack(side='right', padx=(0, 9))
+
+        def send():
+            url = REPORTES_URL.strip()
+            if not url.startswith('https://script.google.com/') or not url.endswith('/exec'):
+                messagebox.showwarning('Reportes sin configurar',
+                    'Primero configurá REPORTES_URL con la URL /exec de Google Apps Script.',
+                    parent=popup)
+                return
+            message = comment.get('1.0', 'end-1c').strip()
+            if len(message) > 500:
+                messagebox.showwarning('Comentario demasiado largo',
+                    'El comentario puede tener hasta 500 caracteres.', parent=popup)
+                return
+            payload = {'juego': game_name, 'problema': reason.get(),
+                       'comentario': message, 'id_juego': game_name}
+            submit.config(state='disabled')
+            status.config(text='Enviando reporte...')
+
+            def finish(ok, error=''):
+                if not popup.winfo_exists():
+                    return
+                if ok:
+                    popup.destroy()
+                    messagebox.showinfo('Reporte enviado',
+                        '¡Reporte enviado! Gracias por ayudarnos a mejorar el catálogo.',
+                        parent=self)
+                else:
+                    submit.config(state='normal')
+                    status.config(text='No se pudo enviar. Podés volver a intentarlo.')
+                    messagebox.showerror('Error al enviar', error, parent=popup)
+
+            def work():
+                try:
+                    request = Request(url,
+                        data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+                        headers={'Content-Type': 'text/plain; charset=utf-8'},
+                        method='POST')
+                    with urlopen(request, timeout=30) as response:
+                        raw = response.read(16384).decode('utf-8')
+                    result = json.loads(raw)
+                    if result.get('ok') is not True:
+                        raise ValueError(result.get('error', 'El servidor rechazó el reporte.'))
+                    self.after(0, lambda: finish(True))
+                except Exception as exc:
+                    error = str(exc)
+                    self.after(0, lambda: finish(False, error))
+            threading.Thread(target=work, daemon=True).start()
+        submit.config(command=send)
+        combo.focus_set()
 
     def download_selected(self):
         if self.selected:

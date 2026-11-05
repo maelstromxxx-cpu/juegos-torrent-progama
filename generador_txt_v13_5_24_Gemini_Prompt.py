@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import html
 from html.parser import HTMLParser
 import tkinter as tk
@@ -58,6 +59,78 @@ def traducir_mymemory_directo(texto):
             if not re.search(r'(language|idioma|langpair|not supported)', ultimo_error, re.I):
                 break
     raise ValueError('MyMemory rechazó la solicitud: ' + str(ultimo_error))
+
+def traducir_gemini(texto, api_key):
+    """Traducción contextual con Gemini. No guarda ni registra la clave API."""
+    # Consultar los modelos disponibles para ESTA clave, evitando nombres retirados.
+    listado_url = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000'
+    listado_req = urllib.request.Request(listado_url, headers={
+        'x-goog-api-key': api_key, 'Accept': 'application/json', 'User-Agent': USER_AGENT})
+    try:
+        with urllib.request.urlopen(listado_req, timeout=25) as respuesta:
+            listado = json.load(respuesta)
+    except urllib.error.HTTPError as exc:
+        try:
+            detalle = json.loads(exc.read().decode('utf-8')).get('error', {}).get('message', '')
+        except Exception:
+            detalle = ''
+        raise ValueError(f'No se pudo consultar la lista de modelos (HTTP {exc.code}). {detalle}') from None
+    disponibles = {m.get('name', '').removeprefix('models/') for m in listado.get('models', [])
+                   if 'generateContent' in m.get('supportedGenerationMethods', [])}
+    preferidos = ('gemini-3-flash', 'gemini-3-flash-preview', 'gemini-3.8-flash',
+                  'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash')
+    modelo = next((m for m in preferidos if m in disponibles), None)
+    if not modelo:
+        raise ValueError('No se encontró un modelo Flash compatible con esta clave. '
+                         'Modelos disponibles: ' + ', '.join(sorted(disponibles)[:20]))
+    url = ('https://generativelanguage.googleapis.com/v1beta/models/'
+           + modelo + ':generateContent')
+    instrucciones = (
+        'Traducí al español de Argentina el texto de una ficha de videojuego. '
+        'Devolvé ÚNICAMENTE la traducción, sin comentarios, comillas ni Markdown adicional. '
+        'Conservá exactamente los saltos de línea, párrafos, viñetas y estructura. '
+        'No traduzcas nombres propios de videojuegos, DLC, ediciones, packs, grupos de cracks, '
+        'repackers, versiones, rutas, archivos, comandos, URLs ni etiquetas técnicas. '
+        'Conservá también cualquier marcador KALAKAPROTECT sin modificar. '
+        'Si un fragmento ya está en español, mantenelo. '
+        'Traducí por significado y contexto, no palabra por palabra. '
+        'Las instrucciones de instalación suelen estar redactadas en inglés telegráfico: '
+        'resolvé expresiones elípticas o poco naturales en español sin inventar pasos ni datos. '
+        'Por ejemplo, cuando una lista de actualizaciones termina en «installed over», '
+        'interpretá que esas actualizaciones ya fueron aplicadas a la instalación base; '
+        'podés redactarlo como «Dos actualizaciones aplicadas: ...», en vez de dejar '
+        'la frase incompleta «instaladas sobre». '
+        'Conservá el sentido y el estado de las acciones (ya realizadas frente a instrucciones futuras). '
+        'No agregues información que el original no afirma. '
+        'Priorizá una traducción natural, precisa y fiel al contexto de videojuegos.'
+    )
+    payload = json.dumps({
+        'systemInstruction': {'parts': [{'text': instrucciones}]},
+        'contents': [{'role': 'user', 'parts': [{'text': texto}]}],
+        'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 8192}
+    }).encode('utf-8')
+    solicitud = urllib.request.Request(url, data=payload, method='POST', headers={
+        'Content-Type': 'application/json', 'x-goog-api-key': api_key,
+        'User-Agent': USER_AGENT})
+    try:
+        with urllib.request.urlopen(solicitud, timeout=90) as respuesta:
+            datos = json.loads(respuesta.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        try:
+            detalle = json.loads(exc.read().decode('utf-8')).get('error', {}).get('message', '')
+        except Exception:
+            detalle = ''
+        raise ValueError(f'Gemini devolvió HTTP {exc.code}. {detalle}') from None
+    candidatos = datos.get('candidates') or []
+    if not candidatos:
+        raise ValueError('Gemini no devolvió ninguna traducción.')
+    partes = (candidatos[0].get('content') or {}).get('parts') or []
+    resultado = ''.join(parte.get('text', '') for parte in partes)
+    if not resultado.strip():
+        raise ValueError('Gemini devolvió una respuesta vacía.')
+    if candidatos[0].get('finishReason') == 'MAX_TOKENS':
+        raise ValueError('La respuesta de Gemini quedó incompleta por límite de tokens.')
+    return resultado
 
 # Sufijos comerciales que no suelen formar parte del nombre base en Steam.
 # Solo se quitan del FINAL y nunca se altera el título del catálogo.
@@ -467,7 +540,7 @@ def drive_buscar_carpeta(sesion, nombre):
 class Generador(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Kalaka’s Soft - Generador v13.5.21 · SteamGridDB y aviso torrent')
+        self.title('Kalaka’s Soft - Generador v13.5.24 · Traducción Gemini')
         self.geometry('1750x900')
         self.minsize(1100, 680)
         try:
@@ -475,6 +548,7 @@ class Generador(tk.Tk):
             if not isinstance(self.configuracion, dict): self.configuracion = {}
         except (OSError, ValueError):
             self.configuracion = {}
+        self._gemini_api_key = os.environ.get('GEMINI_API_KEY', '').strip()
         self.nombre_juego = tk.StringVar()
         self.paneles = []
         self.imagenes_capturas = []
@@ -604,7 +678,7 @@ class Generador(tk.Tk):
         self.protocol('WM_DELETE_WINDOW', self.cerrar)
 
     def traducir_seccion(self, seccion, cuadro):
-        """Vista previa editable, con MyMemory y opción de respaldo Google."""
+        """Vista previa editable con Gemini, MyMemory y Google."""
         original = cuadro.get('1.0', 'end-1c')
         if not original.strip():
             messagebox.showinfo('Traductor', f'El cuadro {seccion} está vacío.', parent=self)
@@ -633,7 +707,11 @@ class Generador(tk.Tk):
         botones.grid(row=3, column=0, sticky='e')
         aplicar = ttk.Button(botones, text='APLICAR TRADUCCIÓN', state='disabled')
         aplicar.pack(side='left', padx=5)
-        reintentar = ttk.Button(botones, text='PROBAR CON GOOGLE', state='disabled')
+        con_gemini = ttk.Button(botones, text='TRADUCIR CON GEMINI')
+        con_gemini.pack(side='left', padx=5)
+        con_mymemory = ttk.Button(botones, text='MYMEMORY')
+        con_mymemory.pack(side='left', padx=5)
+        reintentar = ttk.Button(botones, text='GOOGLE CLÁSICO')
         reintentar.pack(side='left', padx=5)
         ttk.Button(botones, text='Cancelar', command=ventana.destroy).pack(side='left', padx=5)
 
@@ -674,7 +752,11 @@ class Generador(tk.Tk):
                 # MyMemory: API directa, comprobando respuesta y códigos de idioma.
                 # Google queda disponible como respaldo manual.
                 traductor = GoogleTranslator(source='auto', target='es') if motor == 'Google' else None
-                partes = re.split(r'(\n+)', seguro)
+                if motor == 'Gemini':
+                    resultado = traducir_gemini(seguro, self._gemini_api_key)
+                else:
+                    resultado = None
+                partes = re.split(r'(\n+)', seguro) if motor != 'Gemini' else []
                 traducidas = []
                 limite = 450 if motor == 'MyMemory' else 3500
                 for parte in partes:
@@ -692,7 +774,10 @@ class Generador(tk.Tk):
                         fragmentos.append(restante[:corte])
                         restante = restante[corte:]
                     traducidas.append(''.join(traducir_mymemory_directo(t) if motor == 'MyMemory' else (traductor.translate(t) or t) for t in fragmentos))
-                resultado = ''.join(traducidas)
+                if motor != 'Gemini':
+                    resultado = ''.join(traducidas)
+                if motor == 'Gemini' and resultado.count('\n') != original.count('\n'):
+                    raise ValueError('Gemini modificó la cantidad de saltos de línea. No se aplicó la traducción; probá dividir el texto.')
                 for i, valor in enumerate(protegidos):
                     marcador = r'KALAKAPROTECT\s*' + str(i) + r'\s*END'
                     if not re.search(marcador, resultado, flags=re.IGNORECASE):
@@ -705,28 +790,39 @@ class Generador(tk.Tk):
         def iniciar(motor):
             if not ventana.winfo_exists():
                 return
+            if motor == 'Gemini' and not self._gemini_api_key:
+                clave = simpledialog.askstring('Clave API de Gemini',
+                    'Pegá tu clave API de Google AI Studio.\nSe conservará solo en memoria hasta cerrar el programa.',
+                    parent=ventana, show='*')
+                if not clave or not clave.strip():
+                    return
+                self._gemini_api_key = clave.strip()
             estado.set(f'Traduciendo con {motor}... (requiere Internet)')
-            reintentar.configure(state='disabled')
+            for boton in (con_gemini, con_mymemory, reintentar):
+                boton.configure(state='disabled')
             threading.Thread(target=trabajo, args=(motor,), daemon=True).start()
 
         def terminar(resultado, error, motor):
             if not ventana.winfo_exists():
                 return
+            for boton in (con_gemini, con_mymemory, reintentar):
+                boton.configure(state='normal')
             if error:
                 estado.set(f'{motor} no pudo traducir. El texto original sigue intacto.')
                 if motor == 'MyMemory':
-                    reintentar.configure(state='normal')
                     messagebox.showwarning('Traductor MyMemory',
-                        f'{error}\n\nPodés probar el botón PROBAR CON GOOGLE (puede estar limitado).', parent=ventana)
+                        f'{error}\n\nPodés probar con Gemini o Google.', parent=ventana)
                 else:
-                    messagebox.showerror('Traductor Google', error, parent=ventana)
+                    messagebox.showerror('Traductor ' + motor, error, parent=ventana)
                 return
             vista.delete('1.0', 'end')
             vista.insert('1.0', resultado)
             estado.set(f'Traducción terminada con {motor}. Podés corregirla antes de aplicarla.')
             aplicar.configure(state='normal')
         reintentar.configure(command=lambda: iniciar('Google'))
-        iniciar('MyMemory')
+        con_mymemory.configure(command=lambda: iniciar('MyMemory'))
+        con_gemini.configure(command=lambda: iniciar('Gemini'))
+        estado.set('Elegí Gemini, MyMemory o Google para traducir.')
 
     def abrir_steam(self):
         """Buscador opcional. Nunca modifica archivos hasta GUARDAR TODOS."""
