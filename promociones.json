@@ -1,9 +1,9 @@
 {
-  "id": "prueba_card_001",
+  "id": "prueba_flyer_001",
   "activo": true,
   "juego": "Atomic Heart Ultimate Edition",
   "titulo": "¡Ya disponible!",
   "mensaje": "Descubrí la nueva incorporación al catálogo.",
-  "formato": "card",
-  "imagen": "promociones/atomic_card.jpg"
+  "formato": "flyer",
+  "imagen": "promociones/atomic_flyer.webp"
 }
