@@ -25,7 +25,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.7.82'
+APP_VERSION = '2.7.84'
 # Configuración opcional: actualizaciones.json (repositorio GitHub público).
 UPDATE_CONFIG = Path(__file__).resolve().parent / 'actualizaciones.json'
 PROMO_CONFIG = Path(__file__).resolve().parent / 'promociones_config.json'
@@ -1686,10 +1686,10 @@ class App(tk.Tk):
         popup.configure(bg=PANEL)
         popup.resizable(False, False)
         popup.transient(self)
-        popup.geometry('430x245')
+        popup.geometry('430x285')
         popup.update_idletasks()
         x = self.winfo_rootx() + max(0, (self.winfo_width() - 430) // 2)
-        y = self.winfo_rooty() + max(0, (self.winfo_height() - 245) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - 285) // 2)
         popup.geometry(f'+{x}+{y}')
 
         def close():
@@ -1708,17 +1708,31 @@ class App(tk.Tk):
         tk.Button(buttons, text='Cerrar', command=close, bg='#29384A', fg=FG,
                   relief='flat', padx=17, pady=6).pack(side='left', padx=6)
 
+        feedback = tk.Label(popup, text='', bg=PANEL, fg='#e9c46a',
+                            font=('Segoe UI', 9), wraplength=395, justify='center')
+        feedback.pack(side='bottom', padx=12, pady=(0, 7))
+
         def show_game():
-            target = promo['juego'].casefold()
+            title = promo['juego'].strip()
+            target = title.casefold()
             game = next((g for g in self.games if g['name'].casefold() == target), None)
             if game is None:
                 game = next((g for g in self.games if target in g['name'].casefold()), None)
+            # No guardar pedidos pendientes: el usuario decide cuándo volver a intentar.
+            # Evitar navegar a una ficha todavía vacía durante la sincronización.
+            if game is None or not (find_cover(game['name']) or
+                                    find_game_data(game['name']) or
+                                    find_synopsis(game['name'])):
+                feedback.config(text='Este juego todavía se está incorporando al catálogo. '
+                                     'Probá nuevamente en unos instantes.')
+                return
             close()
-            if game:
-                self.search.set('')
-                self.select_game(game)
-            else:
-                self.search.set(promo['juego'])
+            self.search.set('')
+            self.genre_filter.set('Todos los géneros')
+            if self.sort_mode.get() == 'En Colección' or self.sort_mode.get() in PORT_FILTERS:
+                self.sort_mode.set('Recientes')
+            self.select_game(game)
+
         tk.Button(buttons, text='Ver juego', command=show_game, bg=ACCENT,
                   fg='#10151d', relief='flat', padx=17, pady=6).pack(side='left', padx=6)
 
