@@ -1,9 +1,9 @@
 {
-  "id": "prueba_flyer_006",
+  "id": "prueba_card_001",
   "activo": true,
-  "juego": "Atomic Heart Ultimate Edition",
+  "juego": "Assassins Creed Mirage Master Assassin Edition",
   "titulo": "¡Ya disponible!",
-  "mensaje": "Descubrí la nueva incorporación al catálogo.",
-  "formato": "flyer",
-  "imagen": "promociones/atomic_flyer.webp"
+  "mensaje": "Descubrí la nueva aventura.",
+  "formato": "card",
+  "imagen": "promociones/assassin_card.webp"
 }
