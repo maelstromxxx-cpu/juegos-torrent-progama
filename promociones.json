@@ -1,7 +1,9 @@
 {
+  "id": "prueba_card_001",
   "activo": true,
-  "id": "promo_006",
   "juego": "Atomic Heart Ultimate Edition",
-  "titulo": "¡Nuevo DLC",
-  "mensaje": "¡Ya Disponible!"
+  "titulo": "¡Ya disponible!",
+  "mensaje": "Descubrí la nueva incorporación al catálogo.",
+  "formato": "card",
+  "imagen": "promociones/atomic_card.jpg"
 }
