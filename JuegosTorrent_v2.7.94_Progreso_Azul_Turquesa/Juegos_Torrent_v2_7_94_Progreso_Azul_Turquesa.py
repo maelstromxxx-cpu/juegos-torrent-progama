@@ -25,7 +25,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.7.91'
+APP_VERSION = '2.7.94'
 # Configuración opcional: actualizaciones.json (repositorio GitHub público).
 UPDATE_CONFIG = Path(__file__).resolve().parent / 'actualizaciones.json'
 PROMO_CONFIG = Path(__file__).resolve().parent / 'promociones_config.json'
@@ -689,7 +689,7 @@ class BotonElegante(tk.Canvas):
         font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
         text_width = font.measure(self.label)
         icon_width = self.icon_size if self.icon_images.get('normal') is not None else 0
-        gap = 6 if icon_width else 0
+        gap = 6 if icon_width and self.label else 0
         group_width = icon_width + gap + text_width
         start = (w-group_width)/2
         center_y = h/2 + (1 if self.pressed else 0)
@@ -1412,9 +1412,13 @@ def centered_popup(window, width, desired_height=1100):
     window.geometry(f'{width}x{height}+{x}+{y}')
 
 def is_markdown_text(text):
-    return bool(re.search(r'^[ \t]*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)|\*\*[^*\n]+\*\*', text, re.M))
+    return bool(re.search(r'^[ \t]*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?://[^)\s]+\)', text, re.M))
 
 def render_markdown(widget, value, font_size=11):
+    # Cada enlace tiene su propia etiqueta para conservar su URL al hacer clic.
+    for tag in widget.tag_names():
+        if tag.startswith('md_url_'):
+            widget.tag_delete(tag)
     widget.configure(state='normal')
     widget.delete('1.0', 'end')
     widget.tag_configure('bold', font=('Segoe UI', font_size, 'bold'))
@@ -1424,6 +1428,7 @@ def render_markdown(widget, value, font_size=11):
     widget.tag_configure('code', font=('Consolas', max(9, font_size-1)),
                               background='#eef1f3', foreground='#263a4b')
     widget.tag_configure('link', foreground='#1266ae', underline=True)
+    link_index = 0
     widget.tag_configure('heading', font=('Segoe UI', 16, 'bold'),
                               foreground='#16643e', spacing1=12, spacing3=9)
     widget.tag_configure('subheading', font=('Segoe UI', 13, 'bold'),
@@ -1468,7 +1473,16 @@ def render_markdown(widget, value, font_size=11):
                                        (heading_tag,) if heading_tag else ())
                 token = match.group(0)
                 if match.group(2) is not None:
-                    widget.insert('end', match.group(2), ('link',))
+                    link_index += 1
+                    link_tag = f'md_url_{link_index}'
+                    url = match.group(3)
+                    widget.insert('end', match.group(2), ('link', link_tag))
+                    widget.tag_bind(link_tag, '<Button-1>',
+                                    lambda event, destination=url: webbrowser.open(destination))
+                    widget.tag_bind(link_tag, '<Enter>',
+                                    lambda event, w=widget: w.configure(cursor='hand2'))
+                    widget.tag_bind(link_tag, '<Leave>',
+                                    lambda event, w=widget: w.configure(cursor='xterm'))
                 elif token.lower().startswith('<u>'):
                     widget.insert('end', token[3:-4], ('underline',))
                 elif token.startswith('***'):
@@ -1486,6 +1500,134 @@ def render_markdown(widget, value, font_size=11):
 
     widget.configure(state='disabled')
     widget.yview_moveto(0)
+
+class SyncProgressState:
+    """Contadores reales de los lotes activos y terminados de una sesión."""
+    def __init__(self):
+        self.active = {}
+        self.completed = {'total': 0, 'done': 0, 'errors': 0}
+
+    def start(self, batch_id, total):
+        if not self.active:
+            self.completed = {'total': 0, 'done': 0, 'errors': 0}
+        self.active[batch_id] = {'total': max(0, int(total)), 'done': 0, 'errors': 0}
+
+    def step(self, batch_id, success):
+        batch = self.active.get(batch_id)
+        if batch is not None and batch['done'] < batch['total']:
+            batch['done'] += 1
+            if not success:
+                batch['errors'] += 1
+
+    def end(self, batch_id):
+        batch = self.active.pop(batch_id, None)
+        if batch is not None:
+            for key in self.completed:
+                self.completed[key] += batch[key]
+
+    def snapshot(self):
+        result = dict(self.completed)
+        for batch in self.active.values():
+            for key in result:
+                result[key] += batch[key]
+        result['active'] = bool(self.active)
+        result['percent'] = 100*result['done']/max(1, result['total'])
+        return result
+
+
+def render_sync_panel(width, state):
+    """Composición a doble resolución: anillo y barra con el mismo gradiente."""
+    factor = 2
+    width = max(320, int(width))
+    w, h = width*factor, 144*factor
+    picture = Image.new('RGB', (w,h), '#0b111b')
+    draw = ImageDraw.Draw(picture)
+    px = lambda value: round(value*factor)
+    percent = max(0, min(100, state['percent']))
+    # Mismo color en anillo y barra: azul eléctrico -> turquesa.
+    def color(t):
+        return tuple(round(a+(b-a)*t) for a,b in zip((72,155,255),(28,207,187)))
+    cx, cy, radius = px(65), px(72), px(48)
+    line = px(7)
+    draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius),outline='#223146',width=line)
+    # Arcos cortos superpuestos evitan juntas o huecos en el degradado.
+    extent = 360*percent/100
+    for i in range(max(0,math.ceil(extent))):
+        draw.arc((cx-radius,cy-radius,cx+radius,cy+radius),
+                 start=-90+i,end=-90+min(extent,i+1.8),fill=color(i/360),width=line)
+    if percent>0:
+        rr = radius-line/2
+        for angle,t in ((-90,0),(-90+extent,percent/100)):
+            ax=cx+rr*math.cos(math.radians(angle));ay=cy+rr*math.sin(math.radians(angle))
+            draw.ellipse((ax-line/2,ay-line/2,ax+line/2,ay+line/2),fill=color(t))
+    display = f'{int(percent)}%'
+    draw.text((cx,cy-px(4)),display,anchor='mm',font=_promo_font(px(28),True),fill='#f2f5fb')
+    ring_caption='procesado' if state['errors'] else 'completado'
+    draw.text((cx,cy+px(22)),ring_caption,anchor='mm',font=_promo_font(px(9)),fill='#a4b8d1')
+    x, right = px(139), w-px(18)
+    draw.text((x,px(12)),"JUEGOS TORRENT · SINCRONIZACIÓN",font=_promo_font(px(10),True),fill='#43d4bc',anchor='lt')
+    title = ('Actualizando biblioteca' if state['active'] else
+             'Sincronización con errores' if state['errors'] else 'Biblioteca actualizada')
+    draw.text((x,px(40)),title,font=_promo_font(px(17),True,True),fill='#eff4fc',anchor='lt')
+    subtitle = ('Descargando y verificando recursos...' if state['active'] else
+                'Algunos archivos no pudieron actualizarse.' if state['errors'] else
+                'Recursos descargados y verificados.')
+    # Ajustar las líneas de texto en ventanas estrechas sin invadir el anillo.
+    def clipped(value,font):
+        while value and draw.textlength(value,font=font)>right-x:
+            value=value[:-1]
+        return value
+    small=_promo_font(px(10))
+    draw.text((x,px(73)),clipped(subtitle,small),font=small,fill='#a4b8d1',anchor='lt')
+    y=px(102);bar_h=px(7)
+    draw.rounded_rectangle((x,y,right,y+bar_h),radius=bar_h//2,fill='#223146')
+    fill_w=round((right-x)*percent/100)
+    if fill_w>0:
+        mask=Image.new('L',(right-x+1,bar_h+1),0)
+        ImageDraw.Draw(mask).rounded_rectangle((0,0,fill_w,bar_h),radius=bar_h//2,fill=255)
+        gradient=Image.new('RGB',mask.size)
+        gd=ImageDraw.Draw(gradient)
+        for column in range(fill_w+1):
+            gd.line((column,0,column,bar_h),fill=color(column/max(1,right-x)))
+        picture.paste(gradient,(x,y),mask)
+        draw=ImageDraw.Draw(picture)
+    counter=f"{state['done']} de {state['total']} archivos procesados"
+    if state['errors']:
+        counter+=f" · {state['errors']} con errores"
+    draw.text((x,px(119)),clipped(counter,small),font=small,
+              fill='#f1c37a' if state['errors'] else '#a4b8d1',anchor='lt')
+    return picture.resize((width,144),Image.Resampling.LANCZOS)
+
+
+class PanelSincronizacion(tk.Canvas):
+    """Indicador no modal, actualizado únicamente por eventos de archivos."""
+    def __init__(self, master):
+        super().__init__(master,height=144,bg='#0b111b',bd=0,highlightthickness=0)
+        self.state_data={'total':0,'done':0,'errors':0,'percent':0,'active':True}
+        self.photo=None
+        self.bind('<Configure>',lambda event:self._draw())
+
+    def set_state(self,state):
+        self.state_data=dict(state)
+        self._draw()
+
+    def _draw(self):
+        width=max(320,self.winfo_width())
+        self.delete('all')
+        if Image is not None and ImageTk is not None:
+            self.photo=ImageTk.PhotoImage(render_sync_panel(width,self.state_data),master=self)
+            self.create_image(0,0,anchor='nw',image=self.photo)
+        else:
+            # Fallback sin Pillow: sigue mostrando datos reales.
+            s=self.state_data
+            self.create_text(16,30,anchor='w',fill='#43d4bc',font=('Segoe UI',12,'bold'),
+                             text=f"Sincronización: {int(s['percent'])}%")
+            self.create_text(16,62,anchor='w',fill='#dbe8f5',
+                             text=f"{s['done']} de {s['total']} archivos · {s['errors']} errores")
+            self.create_line(16,96,width-16,96,fill='#223146',width=7)
+            if s['percent']>0:
+                self.create_line(16,96,16+(width-32)*s['percent']/100,96,fill='#28c8b7',width=7)
+
 
 class BarraProgresoVerde(tk.Canvas):
     """Indicador de progreso verde, independiente del tema de Windows."""
@@ -1626,7 +1768,8 @@ class App(tk.Tk):
         self.remote_pending = set()
         self.remote_lock = threading.Lock()
         self.asset_events = queue.Queue()
-        self.sync_batches = {}
+        self.sync_state = SyncProgressState()
+        self.sync_batches = self.sync_state.active
         self.sync_batch_serial = 0
         self.sync_hide_job = None
         self.cover_cards = {}
@@ -2086,12 +2229,8 @@ class App(tk.Tk):
         self.status.pack(side='left', fill='x', expand=True)
         # Indicador independiente: no interfiere con los mensajes de la barra de estado.
         self.sync_box = tk.Frame(self, bg=BG)
-        self.sync_text = tk.Label(self.sync_box, bg=BG, fg=ACCENT,
-                                  font=('Segoe UI', 9), anchor='w')
-        self.sync_text.pack(fill='x')
-        # Canvas propio: el verde se ve igual en Windows con cualquier tema.
-        self.sync_progress = BarraProgresoVerde(self.sync_box)
-        self.sync_progress.pack(fill='x', pady=(3, 0))
+        self.sync_progress = PanelSincronizacion(self.sync_box)
+        self.sync_progress.pack(fill='x')
         # Se muestra únicamente cuando hay archivos pendientes.
         tk.Label(status_bar, text='MaelstromxXx & ChatGPT', bg=BG, fg='#728296',
                  anchor='e', font=('Segoe UI', 8)).pack(side='right', padx=(12, 0))
@@ -2634,18 +2773,9 @@ class App(tk.Tk):
         if not self.sync_box.winfo_manager():
             # Debajo de la barra de estado; sin alterar el diseño de las tarjetas.
             self.sync_box.pack(fill='x', padx=22, pady=(0, 8))
-        if self.sync_batches:
-            total = sum(b['total'] for b in self.sync_batches.values())
-            done = sum(b['done'] for b in self.sync_batches.values())
-            errors = sum(b['errors'] for b in self.sync_batches.values())
-            pct = 100 * done / max(total, 1)
-            self.sync_text.config(text=f'🔄 Actualizando biblioteca: {done} de {total} archivos ({pct:.1f} %)' +
-                                       (f' · {errors} errores' if errors else ''))
-            self.sync_progress['value'] = pct
-        else:
-            self.sync_progress['value'] = 100
-            self.sync_text.config(text='✓ Biblioteca actualizada' if not getattr(self, '_sync_last_errors', 0)
-                                  else f'⚠ Sincronización terminada: {self._sync_last_errors} archivos con errores')
+        state = self.sync_state.snapshot()
+        self.sync_progress.set_state(state)
+        if not state['active']:
             self.sync_hide_job = self.after(5000, self._hide_sync_indicator)
 
     def process_asset_events(self):
@@ -2664,19 +2794,13 @@ class App(tk.Tk):
                             self.promo_pending = batch_id
                             self._maybe_show_promotion()
                     elif kind == 'sync_start':
-                        self.sync_batches[batch_id] = {'total': value, 'done': 0, 'errors': 0}
+                        self.sync_state.start(batch_id, value)
                         progress_changed = True
                     elif kind == 'sync_step':
-                        batch = self.sync_batches.get(batch_id)
-                        if batch is not None:
-                            batch['done'] += 1
-                            if not value:
-                                batch['errors'] += 1
-                            progress_changed = True
+                        self.sync_state.step(batch_id, value)
+                        progress_changed = True
                     elif kind == 'sync_end':
-                        batch = self.sync_batches.pop(batch_id, None)
-                        if batch is not None:
-                            self._sync_last_errors = batch['errors']
+                        self.sync_state.end(batch_id)
                         progress_changed = True
                 else:
                     changed.add(event)
