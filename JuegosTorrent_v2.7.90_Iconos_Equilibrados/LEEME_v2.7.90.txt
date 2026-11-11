@@ -1,0 +1,41 @@
+Juegos Torrent v2.7.90 — Iconos equilibrados
+
+INSTALACIÓN
+Usar una copia de la carpeta actual. Añadir el nuevo .py conservando recursos, tutoriales y demás archivos. Ejecutar Juegos_Torrent_v2_7_90_Iconos_Equilibrados.py.
+Este paquete contiene código y configuración; no incluye los recursos gráficos de tu instalación.
+
+PUBLICAR UNA PROMOCIÓN
+1. Crear la carpeta promociones en juegos-torrent-progama y subir una imagen JPG, PNG o WebP.
+2. Copiar uno de los JSON de ejemplo a promociones.json en ese repositorio.
+3. Ajustar juego para que coincida con el título del catálogo, titulo, mensaje e imagen.
+4. Elegir formato: card o flyer. Si se omite, se usa card.
+5. Usar un ID nuevo en cada campaña o prueba. Los ID vistos no se repiten.
+
+imagen admite una ruta relativa al promociones.json remoto, por ejemplo promociones/atomic_card.jpg, o una URL HTTPS completa. Puede omitirse o estar vacía. No es una ruta del disco de Windows.
+Card y Flyer usan la imagen como fondo completo, con degradado oscuro inferior, esquinas redondeadas, cierre flotante y botón de imagen con estado hover. No hay franjas adicionales ni márgenes alrededor de la imagen.
+Flyer recomendado: 1280 × 720 (16:9). Conserva esa proporción en la ventana. Si se usa una imagen con proporción extrema, se recorta centrada para llenar el formato: Flyer admite relaciones de 1,45 a 2,2; Card utiliza una composición fija 380 × 540 adaptable a pantalla. Para Card recomendamos 760 × 1080: otras proporciones se recortan para llenar la tarjeta.
+Los textos se superponen en la zona inferior. Dejar esa zona libre de texto importante dentro del arte. Recomendamos mensajes de 1–3 frases. En Flyer: botón a la izquierda, textos alineados a la derecha. En Card: textos sobre el botón, todo integrado en la imagen.
+Tipografía Bahnschrift para títulos y botón, Segoe UI para lectura; fuentes alternativas si no están disponibles. No requiere instalar fuentes ni copiar imágenes de botones: el programa las compone a alta resolución.
+Si se omite Pillow, se conserva el popup alternativo de la versión anterior. Para el diseño nuevo: pip install pillow.
+Límite de descarga: 8 MiB; imágenes de hasta 20 megapíxeles. Caché por URL e ID. Si cambia la imagen, publicar un ID nuevo.
+
+FUNCIONAMIENTO
+Imagen descargada en segundo plano. Si falla, portada local o fondo alternativo. Una campaña por ID, cierre inmediato, sin bloqueo del catálogo y sin navegación pendiente. Esquinas transparentes en Windows cuando Tk admite transparentcolor. En otras plataformas se conserva un fondo rectangular.
+
+VERIFICACIÓN
+Código compilado. Composición Card/Flyer renderizada e inspeccionada con imagen de prueba. Comprobados estados normal/hover, esquinas y áreas de clic dentro de la ventana. Pendiente de prueba visual y funcional en Windows, incluidos escalado DPI y transparencias.
+
+NOVEDADES CARD v2.7.88
+Card de 380 × 540, sin cabecera; arte de borde a borde, degradado inferior ajustado, título de mayor presencia, acento verde y botón ancho integrado. Flyer conserva exactamente la composición v2.7.87 (comprobación píxel a píxel de estado normal y hover). No se ha cambiado la lógica de sincronización o navegación.
+Para probar: formato card en promociones.json, imagen vertical y un ID nuevo.
+
+CAMBIO v2.7.89
+Etiqueta JUEGOS TORRENT / NOVEDADES en Flyer y Card. Texto centrado según los límites reales de la fuente. Cápsula azul oscuro al 69% de opacidad compuesta sobre la imagen (transparencia real del fondo). No se modifican botones ni navegación.
+
+AJUSTE v2.7.90 — BARRA DE INFORMACIÓN RÁPIDA
+Se mantienen textos, fuente, separación entre casilleros y espacio de 20 × 20 por icono.
+Calendario: conserva la escala previa.
+Género, Tamaño, Modo e Idioma: se aprovecha la silueta visible del PNG, recortando márgenes transparentes en memoria y centrando la imagen con LANCZOS. No se modifican tus PNG del disco. Si ya están ajustados al borde, la diferencia será menor.
+Conservar los iconos actuales con sus nombres: anio.png, genero.png, tamano.png, modo.png, idioma.png en recursos/iconos/ (o recursos/ como alternativa).
+El ZIP no incluye ni reemplaza tus imágenes. Copiar el nuevo Python a una copia de la carpeta habitual y ejecutarlo.
+Código compilado y tratamiento de transparencia comprobado con imágenes de prueba. Falta evaluación visual con los iconos instalados en Windows.
