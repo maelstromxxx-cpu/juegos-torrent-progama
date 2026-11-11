@@ -25,7 +25,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.7.90'
+APP_VERSION = '2.7.91'
 # Configuración opcional: actualizaciones.json (repositorio GitHub público).
 UPDATE_CONFIG = Path(__file__).resolve().parent / 'actualizaciones.json'
 PROMO_CONFIG = Path(__file__).resolve().parent / 'promociones_config.json'
@@ -604,7 +604,7 @@ class BarraDesplazamiento(tk.Canvas):
             self.command('moveto', max(0, min(1-span, new_first)))
 
 
-def cargar_icono_ui(nombre, tamano, master):
+def cargar_icono_ui(nombre, tamano, master, ajustar_margenes=False):
     """Carga PNG externo y lo ajusta al tamaño indicado; permite reemplazarlo sin editar código."""
     ruta = ASSETS / nombre
     if not ruta.is_file():
@@ -612,10 +612,8 @@ def cargar_icono_ui(nombre, tamano, master):
     try:
         if Image is not None and ImageTk is not None:
             with Image.open(ruta) as original:
-                icono = original.convert('RGBA')
-                icono.thumbnail((tamano, tamano), Image.Resampling.LANCZOS)
-                lienzo = Image.new('RGBA', (tamano, tamano), (0, 0, 0, 0))
-                lienzo.alpha_composite(icono, ((tamano-icono.width)//2, (tamano-icono.height)//2))
+                lienzo = prepare_info_icon(original, size=tamano,
+                                           normalize=ajustar_margenes)
             return ImageTk.PhotoImage(lienzo, master=master)
         # Si Pillow no está instalado, Tk puede cargar PNG, aunque sin reescalado fino.
         return tk.PhotoImage(file=str(ruta), master=master)
@@ -633,8 +631,11 @@ class BotonElegante(tk.Canvas):
         self.command = command
         self.icon = icon
         self.icon_images = {}
+        self.icon_size = 22 if icon in ('refresh', 'book') else 18
         if icon:
-            self.icon_images["normal"] = cargar_icono_ui(f"icono_{icon}.png", 18, self)
+            self.icon_images["normal"] = cargar_icono_ui(
+                f"icono_{icon}.png", self.icon_size, self,
+                ajustar_margenes=icon in ('refresh', 'book'))
         self.hover = False
         self.pressed = False
         self.bind('<Enter>', self._enter)
@@ -668,7 +669,7 @@ class BotonElegante(tk.Canvas):
             self.command()
 
     def _draw_icon(self, x, y, color):
-        # Imágenes PNG reales, suavizadas a 14 px; Tkinter no dibuja sus curvas.
+        # PNG centrados y suavizados; tamaño ajustado según el botón.
         image = self.icon_images.get('normal')
         if image is not None:
             self.create_image(round(x), round(y), image=image, anchor='center')
@@ -687,7 +688,7 @@ class BotonElegante(tk.Canvas):
         SelectorElegante._rounded(self, self, 2, 2, w-2, h-2, 8, fill)
         font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
         text_width = font.measure(self.label)
-        icon_width = 18 if self.icon_images.get('normal') is not None else 0
+        icon_width = self.icon_size if self.icon_images.get('normal') is not None else 0
         gap = 6 if icon_width else 0
         group_width = icon_width + gap + text_width
         start = (w-group_width)/2
@@ -1976,7 +1977,7 @@ class App(tk.Tk):
             self.downloads_tab, command=self.download_selected)
         self.download_button.pack(fill='x', padx=8, pady=(10, 12))
         # Botón fijo dentro de la barra, sin place() ni dimensiones en unidades de texto.
-        self.report_icon_photo = cargar_icono_ui('icono_reportar.png', 21, self)
+        self.report_icon_photo = cargar_icono_ui('icono_reportar.png', 21, self, ajustar_margenes=True)
         self.report_button = tk.Button(
             self.tabs.nav, text='' if self.report_icon_photo else '🚩',
             image=self.report_icon_photo, command=self.open_report_dialog,
