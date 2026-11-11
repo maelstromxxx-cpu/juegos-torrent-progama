@@ -25,7 +25,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.7.94'
+APP_VERSION = '2.7.95'
 # Configuración opcional: actualizaciones.json (repositorio GitHub público).
 UPDATE_CONFIG = Path(__file__).resolve().parent / 'actualizaciones.json'
 PROMO_CONFIG = Path(__file__).resolve().parent / 'promociones_config.json'
@@ -1501,6 +1501,32 @@ def render_markdown(widget, value, font_size=11):
     widget.configure(state='disabled')
     widget.yview_moveto(0)
 
+def render_splash_bar(percent, width=530, height=15):
+    """Barra azul/turquesa RGBA, sin fondo fuera de la cápsula."""
+    scale = 3
+    w, h = width*scale, height*scale
+    picture = Image.new('RGBA', (w,h), (0,0,0,0))
+    draw = ImageDraw.Draw(picture)
+    draw.rounded_rectangle((0,0,w-1,h-1), radius=h//2, fill='#152333')
+    draw.rounded_rectangle((scale,scale,w-scale-1,h-scale-1),
+                           radius=(h-2*scale)//2, fill='#25323b')
+    progress = max(0,min(100,percent))/100
+    if progress>0:
+        available = w-10*scale
+        length = min(available,max(9*scale,round(available*progress)))
+        fill_h = 9*scale
+        gradient = Image.new('RGBA',(length,fill_h))
+        gd = ImageDraw.Draw(gradient)
+        for x in range(length):
+            t=x/max(1,length-1)
+            rgb=tuple(round(a+(b-a)*t) for a,b in zip((72,155,255),(28,207,187)))
+            gd.line((x,0,x,fill_h),fill=rgb+(255,))
+        mask = Image.new('L',gradient.size,0)
+        ImageDraw.Draw(mask).rounded_rectangle((0,0,length-1,fill_h-1),radius=fill_h//2,fill=255)
+        picture.paste(gradient,(5*scale,3*scale),mask)
+    return picture.resize((width,height),Image.Resampling.LANCZOS)
+
+
 class SyncProgressState:
     """Contadores reales de los lotes activos y terminados de una sesión."""
     def __init__(self):
@@ -2402,26 +2428,31 @@ class App(tk.Tk):
         canvas.create_text(w//2, 369, text=self.splash_message,
                            fill='#f0f3f8', font=('Segoe UI', 12, 'bold'))
         x1, x2, y1, y2 = 160, w-160, 392, 407
-        # Dibujar cada cápsula como UNA línea con extremos ROUND.
-        # Evita uniones irregulares entre óvalos y rectángulos.
-        cy = (y1 + y2) / 2
-        radius = (y2 - y1) / 2
-        left_center, right_center = x1 + radius, x2 - radius
-        canvas.create_line(left_center, cy, right_center, cy,
-                           fill='#438d69', width=15, capstyle=tk.ROUND)
-        canvas.create_line(left_center, cy, right_center, cy,
-                           fill='#25323b', width=13, capstyle=tk.ROUND)
-        progress = max(0, min(100, self._splash_progress)) / 100
-        if progress > 0:
-            # El relleno también es un solo trazo, sin piezas superpuestas.
-            fill_left = x1 + 5
-            fill_right = x2 - 5
-            length = (fill_right - fill_left) * progress
-            fill_radius = 4.5
-            start = fill_left + fill_radius
-            end = max(start, fill_left + length - fill_radius)
-            canvas.create_line(start, cy, end, cy,
-                               fill='#4cdb8d', width=9, capstyle=tk.ROUND)
+        if Image is not None and ImageTk is not None:
+            bar = render_splash_bar(self._splash_progress, x2-x1, y2-y1)
+            self._splash_bar_photo = ImageTk.PhotoImage(bar, master=self.splash)
+            canvas.create_image(x1, y1, image=self._splash_bar_photo, anchor='nw')
+        else:
+            # Dibujar cada cápsula como UNA línea con extremos ROUND.
+            # Evita uniones irregulares entre óvalos y rectángulos.
+            cy = (y1 + y2) / 2
+            radius = (y2 - y1) / 2
+            left_center, right_center = x1 + radius, x2 - radius
+            canvas.create_line(left_center, cy, right_center, cy,
+                               fill='#152333', width=15, capstyle=tk.ROUND)
+            canvas.create_line(left_center, cy, right_center, cy,
+                               fill='#25323b', width=13, capstyle=tk.ROUND)
+            progress = max(0, min(100, self._splash_progress)) / 100
+            if progress > 0:
+                # El relleno también es un solo trazo, sin piezas superpuestas.
+                fill_left = x1 + 5
+                fill_right = x2 - 5
+                length = (fill_right - fill_left) * progress
+                fill_radius = 4.5
+                start = fill_left + fill_radius
+                end = max(start, fill_left + length - fill_radius)
+                canvas.create_line(start, cy, end, cy,
+                                   fill='#1ccfbb', width=9, capstyle=tk.ROUND)
         canvas.create_text(w//2, 423, text=f'{int(self._splash_progress)}%',
                            fill='#9eddb8', font=('Segoe UI', 9, 'bold'))
 
