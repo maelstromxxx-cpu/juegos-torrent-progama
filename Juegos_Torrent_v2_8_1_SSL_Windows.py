@@ -25,7 +25,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.7.99'
+APP_VERSION = '2.8.1'
 
 import actualizador
 
@@ -1419,6 +1419,17 @@ def _genres(raw):
 
 PORT_FILTERS = {f'PS{n} Port': f'PS{n}' for n in range(1, 6)}
 
+def initial_panel_layout(width):
+    """Reparto inicial sobre el ancho del PanedWindow, no sobre el monitor."""
+    usable = max(2, int(width) - 6)
+    min_left = min(360, usable // 2)
+    min_right = min(490, usable - min_left)
+    # Mitad para cada sector; catálogo limitado al ancho habitual de cinco columnas.
+    target = min(950, usable // 2)
+    target = max(min_left, min(target, usable - min_right))
+    return target, min_left, min_right
+
+
 def centered_popup(window, width, desired_height=1100):
     screen_w, screen_h = window.winfo_screenwidth(), window.winfo_screenheight()
     height = min(desired_height, max(480, screen_h - 75))
@@ -1912,10 +1923,15 @@ class App(tk.Tk):
         left = tk.Frame(body, bg=BG)
         right = tk.Frame(body, bg=PANEL, width=680)
         body.add(left, stretch='always', minsize=360)
-        body.add(right, minsize=490)
-        # Conservar el panel de ficha en un ancho estable durante el arranque.
+        body.add(right, stretch='always', minsize=490)
+        # Repartir el ancho inicial de forma adaptable entre catálogo y ficha.
         # La geometría real se conoce al mapear la ventana, no tras 350 ms fijos.
         self.main_paned = body
+        self._catalog_pane = left
+        self._detail_pane = right
+        self._pane_minimums = (360, 490)
+        body.bind('<Configure>', self._on_main_paned_resize)
+        body.bind('<ButtonPress-1>', self._on_main_paned_press, add='+')
         self.after_idle(self._schedule_startup_split)
 
         # La recarga del catálogo comparte la fila de los selectores.
@@ -2511,6 +2527,30 @@ class App(tk.Tk):
             return
         self._schedule_startup_split()
 
+    def _on_main_paned_resize(self, event):
+        if event.widget is not self.main_paned or event.width < 2:
+            return
+        _, min_left, min_right = initial_panel_layout(event.width)
+        limits = (min_left, min_right)
+        if limits != getattr(self, '_pane_minimums', None):
+            self._pane_minimums = limits
+            self.main_paned.paneconfigure(self._catalog_pane, minsize=min_left)
+            self.main_paned.paneconfigure(self._detail_pane, minsize=min_right)
+        if not self._startup_split_done:
+            self._schedule_startup_split()
+
+    def _on_main_paned_press(self, event):
+        # Si el usuario toma el divisor, las pasadas de arranque dejan de moverlo.
+        try:
+            sash_x, _ = self.main_paned.sash_coord(0)
+            if abs(event.x - sash_x) <= 8:
+                self._startup_split_done = True
+                if self._startup_split_job is not None:
+                    self.after_cancel(self._startup_split_job)
+                    self._startup_split_job = None
+        except tk.TclError:
+            pass
+
     def _schedule_startup_split(self):
         if self._startup_split_done or not hasattr(self, 'main_paned'):
             return
@@ -2519,23 +2559,22 @@ class App(tk.Tk):
         self._startup_split_job = self.after(160, self._set_startup_split)
 
     def _set_startup_split(self):
-        """Fijar el divisor cuando la ventana ya tiene dimensiones utilizables."""
+        """Colocar el divisor cuando la ventana visible ya tiene su tamaño real."""
         self._startup_split_job = None
         if self._startup_split_done:
             return
         body = self.main_paned
         width = body.winfo_width()
-        if width < 860 or not body.winfo_ismapped():
+        if width < 400 or not body.winfo_ismapped():
             self._schedule_startup_split()
             return
-        # Preferir cinco columnas a la izquierda si entra; respetar la ficha.
-        min_left, min_right, sash = 360, 490, 6
-        left_width = min(950, width - min_right - sash)
-        left_width = max(min_left, left_width)
+        target, min_left, min_right = initial_panel_layout(width)
         try:
-            body.sash_place(0, left_width, 1)
-            # Segunda pasada: algunos widgets todavía solicitan tamaño en
-            # el primer ciclo de geometría y pueden desplazar el divisor.
+            body.paneconfigure(self._catalog_pane, minsize=min_left)
+            body.paneconfigure(self._detail_pane, minsize=min_right)
+            self._pane_minimums = (min_left, min_right)
+            body.sash_place(0, target, 1)
+            # Una segunda pasada absorbe los cambios de geometría del primer dibujo.
             self.after(220, self._verify_startup_split)
         except tk.TclError:
             self._schedule_startup_split()
@@ -2545,17 +2584,19 @@ class App(tk.Tk):
             return
         body = self.main_paned
         width = body.winfo_width()
-        if width < 860 or not body.winfo_ismapped():
+        if width < 400 or not body.winfo_ismapped():
             self._schedule_startup_split()
             return
-        target = max(360, min(950, width - 490 - 6))
+        target, _, _ = initial_panel_layout(width)
         try:
             current = body.sash_coord(0)[0]
             if abs(current - target) > 12:
                 body.sash_place(0, target, 1)
         except tk.TclError:
-            pass
+            self._schedule_startup_split()
+            return
         self._startup_split_done = True
+
 
     def redraw_ficha_header(self, event=None):
         """Cabecera azul grafito adaptable, sin escalado de archivos externos."""
@@ -2912,9 +2953,13 @@ class App(tk.Tk):
                 if cfg.get('habilitado', True) is not True:
                     return
                 repo = str(cfg.get('repositorio', '')).strip().strip('/')
+                logging.info('Actualizador: comprobando GitHub (%s), versión local %s', repo, APP_VERSION)
                 info = actualizador.check_release(repo, APP_VERSION)
                 if info:
+                    logging.info('Actualizador: versión nueva disponible %s', info['version'])
                     self.asset_events.put(('program_offer', info))
+                else:
+                    logging.info('Actualizador: no hay una versión más reciente')
             except Exception:
                 logging.exception('No se pudo comprobar la actualización del programa; continúa normalmente')
         threading.Thread(target=worker, daemon=True).start()
