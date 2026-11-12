@@ -25,17 +25,33 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.7.95'
+APP_VERSION = '2.7.99'
+
+import actualizador
+
+# Modo auxiliar: entrar antes de crear caché, recursos o la ventana principal.
+if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == '--aplicar-actualizacion':
+    raise SystemExit(actualizador.run_updater(Path(sys.argv[2])))
+
+
+def app_base_directory():
+    """Recursos externos junto al EXE, nunca en la extracción de onefile."""
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+BASE = app_base_directory()
 # Configuración opcional: actualizaciones.json (repositorio GitHub público).
-UPDATE_CONFIG = Path(__file__).resolve().parent / 'actualizaciones.json'
-PROMO_CONFIG = Path(__file__).resolve().parent / 'promociones_config.json'
+UPDATE_CONFIG = BASE / 'actualizaciones.json'
+PROMO_CONFIG = BASE / 'promociones_config.json'
 PROMO_STATE = Path(os.environ.get('APPDATA') or os.environ.get('LOCALAPPDATA') or str(Path.home())) / 'Juegos Torrents' / 'promociones_vistas.json'
 
 
 CATALOG_ID = '1WP2cyZ3ovEHqs6S18bi49U41EkrG0Uld'
 CATALOG_URL = f'https://drive.google.com/uc?export=download&id={CATALOG_ID}'
 # Pegá aquí la URL /exec de tu implementación de Google Apps Script.
-REPORTES_URL = 'PEGAR_URL_EXEC_AQUI'
+REPORTES_URL = 'https://script.google.com/macros/s/AKfycbyu29o0sIc8NCqKLThksldrT1k-4glYP9_XCZMBuUzGi-Lf3XbSylMtgNE2HfnW4l4Mqw/exec'
 REPORTES_MOTIVOS = (
     'Falta el Torrent / Torrent incorrecto',
     'Torrent sin seeds',
@@ -48,7 +64,6 @@ REPORTES_MOTIVOS = (
     'Otro problema',
 )
 CATALOG_CACHE_NAME = 'catalogo_cache.txt'
-BASE = Path(__file__).resolve().parent
 CATALOG_CACHE = BASE / CATALOG_CACHE_NAME
 OWNED_FILE = Path(os.environ.get('LOCALAPPDATA', str(BASE))) / 'Juegos Torrents' / 'mis_juegos.json'
 LOG_FILE = BASE / 'sincronizacion.log'
@@ -631,7 +646,7 @@ class BotonElegante(tk.Canvas):
         self.command = command
         self.icon = icon
         self.icon_images = {}
-        self.icon_size = 22 if icon in ('refresh', 'book') else 18
+        self.icon_size = 19 if icon == 'refresh' else (22 if icon == 'book' else 18)
         if icon:
             self.icon_images["normal"] = cargar_icono_ui(
                 f"icono_{icon}.png", self.icon_size, self,
@@ -1844,8 +1859,6 @@ class App(tk.Tk):
         else:
             tk.Label(top, text='Juegos Torrent', fg=ACCENT, bg=BG,
                      font=('Segoe UI', 24, 'bold')).pack(side='left')
-        BotonElegante(top, 'Buscar actualización', self.check_program_updates,
-                      width=195, height=34, icon='refresh').pack(side='right', padx=(0, 10))
         BotonElegante(top, 'Guías', self.open_help_center,
                       width=112, height=34, icon='book').pack(side='right', padx=(0, 10))
         # Buscador con contorno redondeado, a juego con los selectores.
@@ -2264,6 +2277,7 @@ class App(tk.Tk):
         self._build_startup_splash()
         # Dejar que Tk dibuje el splash ANTES de iniciar tareas de red.
         self.after(120, self._start_initial_loading)
+        self.after_idle(self._ack_program_update)
 
     @staticmethod
     def _load_seen_promos():
@@ -2489,6 +2503,7 @@ class App(tk.Tk):
             self.after_idle(self._schedule_startup_split)
             self.promo_startup_finished = True
             self.after(350, self._maybe_show_promotion)
+            self.after(2500, self.check_program_updates)
 
     def _on_window_mapped(self, event):
         """El HWND de Windows ya existe al recibir Map."""
@@ -2820,7 +2835,9 @@ class App(tk.Tk):
                     kind = event[0]
                     batch_id = event[1]
                     value = event[2] if len(event) > 2 else None
-                    if kind == 'promotion':
+                    if kind.startswith('program_'):
+                        self._program_update_event(kind, batch_id)
+                    elif kind == 'promotion':
                         if batch_id['id'] not in self.promo_seen:
                             self.promo_pending = batch_id
                             self._maybe_show_promotion()
@@ -2885,105 +2902,132 @@ class App(tk.Tk):
                 self.show_synopsis(game)
 
     def check_program_updates(self):
-        """Consulta GitHub Releases sin alterar catálogo ni archivos instalados."""
-        try:
-            cfg = json.loads(UPDATE_CONFIG.read_text(encoding='utf-8'))
-            repo = str(cfg.get('repositorio', '')).strip().strip('/')
-            if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
-                raise ValueError('Configurá repositorio como usuario/repositorio.')
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            messagebox.showinfo('Actualizaciones de Juegos Torrent',
-                                'Falta configurar actualizaciones.json.\n\n' + str(exc))
+        """Una consulta automática por arranque; sin avisos si no hay novedades."""
+        if getattr(self, '_program_checked', False) or not getattr(sys, 'frozen', False):
             return
+        self._program_checked = True
         def worker():
             try:
-                url = f'https://api.github.com/repos/{repo}/releases/latest'
-                request = Request(url, headers={'User-Agent': 'KalakasSoft-JuegosTorrent',
-                                                'Accept': 'application/vnd.github+json'})
-                with urlopen(request, timeout=18) as response:
-                    payload = response.read(1_000_001)
-                if len(payload) > 1_000_000:
-                    raise ValueError('Respuesta de GitHub demasiado grande.')
-                release = json.loads(payload)
-                tag = str(release.get('tag_name', '')).lstrip('vV')
-                match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', tag)
-                if not match:
-                    raise ValueError('La versión publicada no tiene formato X.Y.Z.')
-                remote = tuple(map(int, match.groups()))
-                local = tuple(map(int, APP_VERSION.split('.')))
-                if remote <= local:
-                    self.after(0, lambda: messagebox.showinfo('Juegos Torrent',
-                        f'Tenés la última versión ({APP_VERSION}).'))
+                cfg = json.loads(UPDATE_CONFIG.read_text(encoding='utf-8-sig'))
+                if cfg.get('habilitado', True) is not True:
                     return
-                assets = release.get('assets', [])
-                installers = [a for a in assets if isinstance(a, dict) and
-                              str(a.get('name', '')).lower().endswith('.exe') and
-                              'setup' in str(a.get('name', '')).lower() and
-                              str(a.get('browser_download_url', '')).startswith(
-                                  'https://github.com/')]
-                if not installers:
-                    raise ValueError('Hay una versión nueva, pero no se publicó un instalador Setup .exe válido.')
-                asset = installers[0]
-                self.after(0, lambda: self.offer_program_update(tag, asset))
-            except Exception as exc:
-                detail = str(exc)
-                self.after(0, lambda: messagebox.showerror('Actualizaciones de Juegos Torrent',
-                    'No se pudo consultar GitHub Releases.\n\n' + detail))
+                repo = str(cfg.get('repositorio', '')).strip().strip('/')
+                info = actualizador.check_release(repo, APP_VERSION)
+                if info:
+                    self.asset_events.put(('program_offer', info))
+            except Exception:
+                logging.exception('No se pudo comprobar la actualización del programa; continúa normalmente')
         threading.Thread(target=worker, daemon=True).start()
 
-    def offer_program_update(self, version, asset):
-        if not messagebox.askyesno('Nueva versión de Juegos Torrent',
-                                   f'Versión instalada: {APP_VERSION}\n'
-                                   f'Nueva versión: {version}\n\n'
-                                   '¿Descargar el instalador oficial desde GitHub?'):
+    def offer_program_update(self, info):
+        # No superponer la oferta de actualización al flyer de bienvenida.
+        if self.promo_window is not None:
+            self.after(500, lambda: self.offer_program_update(info))
             return
+        if not messagebox.askyesno('Actualización disponible',
+                f"Juegos Torrent {info['version']} está disponible.\n"
+                f'Versión instalada: {APP_VERSION}\n\n'
+                '¿Actualizar ahora? Se descargará y verificará el nuevo ejecutable.\n'
+                'Después el gestor se cerrará y volverá a abrir.\n'
+                'Tu biblioteca y configuraciones se conservan.', parent=self):
+            return
+        self._update_cancel = threading.Event()
+        popup = tk.Toplevel(self)
+        self._program_update_popup = popup
+        popup.title('Juegos Torrent | Actualización')
+        popup.configure(bg=PANEL)
+        popup.transient(self)
+        popup.resizable(False, False)
+        tk.Label(popup, text='Descargando actualización', bg=PANEL, fg=FG,
+                 font=('Segoe UI', 13, 'bold')).pack(padx=24, pady=(20, 10))
+        self._program_update_label = tk.Label(popup, text='Preparando descarga...',
+                                             bg=PANEL, fg=MUTED, font=('Segoe UI', 10))
+        self._program_update_label.pack(padx=24, pady=8)
+        self._program_update_bar = BarraProgresoVerde(popup)
+        self._program_update_bar.pack(fill='x', padx=24, pady=8)
+        self._program_update_cancel_button = tk.Button(popup, text='Cancelar',
+                command=self._update_cancel.set, bg=CARD, fg=FG, relief='flat', padx=14, pady=7)
+        self._program_update_cancel_button.pack(pady=(6, 18))
+        popup.protocol('WM_DELETE_WINDOW', self._update_cancel.set)
+        popup.update_idletasks()
+        width,height=440,popup.winfo_reqheight()
+        x=self.winfo_rootx()+max(0,(self.winfo_width()-width)//2)
+        y=self.winfo_rooty()+max(0,(self.winfo_height()-height)//2)
+        popup.geometry(f'{width}x{height}+{max(0,x)}+{max(0,y)}')
         def worker():
+            stage = None
+            handoff = None
             try:
-                name = str(asset['name'])
-                if Path(name).name != name or not name.lower().endswith('.exe'):
-                    raise ValueError('Nombre de instalador inválido.')
-                size = int(asset.get('size', 0))
-                if size <= 0 or size > 1_500_000_000:
-                    raise ValueError('Tamaño de instalador no válido.')
-                folder = Path(os.environ.get('LOCALAPPDATA', str(BASE))) / 'Juegos Torrents' / 'actualizaciones'
-                folder.mkdir(parents=True, exist_ok=True)
-                target = folder / name
-                temporary = folder / (name + '.part')
-                digest = hashlib.sha256()
-                count = 0
-                try:
-                    req = Request(asset['browser_download_url'], headers={'User-Agent': 'KalakasSoft-JuegosTorrent'})
-                    with urlopen(req, timeout=45) as response, temporary.open('wb') as output:
-                        while chunk := response.read(1024 * 1024):
-                            count += len(chunk)
-                            if count > size:
-                                raise ValueError('La descarga excedió el tamaño esperado.')
-                            digest.update(chunk)
-                            output.write(chunk)
-                    if count != size:
-                        raise ValueError('Descarga incompleta.')
-                    expected = str(asset.get('digest', ''))
-                    if expected.startswith('sha256:') and digest.hexdigest().lower() != expected[7:].lower():
-                        raise ValueError('El SHA-256 no coincide con el publicado por GitHub.')
-                    temporary.replace(target)
-                finally:
-                    temporary.unlink(missing_ok=True)
-                self.after(0, lambda: self.program_update_ready(target))
+                def progress(done, total):
+                    if self._update_cancel.is_set():
+                        raise InterruptedError('Actualización cancelada.')
+                    self.asset_events.put(('program_progress', (done, total)))
+                target = Path(sys.executable).resolve()
+                stage = actualizador.download_update(info, target, progress)
+                if self._update_cancel.is_set():
+                    raise InterruptedError('Actualización cancelada.')
+                self.asset_events.put(('program_preparing', None))
+                handoff = actualizador.prepare_handoff(info, stage, target)
+                self.asset_events.put(('program_handoff', handoff))
             except Exception as exc:
-                detail = str(exc)
-                self.after(0, lambda: messagebox.showerror('Descarga de actualización', detail))
+                if stage is not None and handoff is None:
+                    stage.unlink(missing_ok=True)
+                self.asset_events.put(('program_failed', (str(exc), isinstance(exc, InterruptedError))))
         threading.Thread(target=worker, daemon=True).start()
 
-    def program_update_ready(self, installer):
-        if messagebox.askyesno('Instalador descargado',
-                               'El instalador se descargó correctamente.\n\n'
-                               '¿Abrirlo ahora? Cerrá Juegos Torrent antes de continuar '
-                               'con la instalación. Tus datos personales no se borran.'):
-            try:
-                subprocess.Popen([str(installer)], cwd=str(installer.parent))
-                self.destroy()
-            except OSError as exc:
-                messagebox.showerror('Actualizaciones', str(exc))
+    def _program_update_event(self, kind, value):
+        if kind == 'program_offer':
+            self.offer_program_update(value)
+        elif kind == 'program_progress':
+            done,total=value
+            self._program_update_bar['value'] = 100*done/max(1,total)
+            self._program_update_label.config(text=f'Descargado: {done/1048576:.1f} de {total/1048576:.1f} MB')
+        elif kind == 'program_preparing':
+            self._program_update_cancel_button.config(state='disabled')
+            self._program_update_label.config(text='EXE verificado. Preparando el reinicio...')
+        elif kind == 'program_handoff':
+            if self._update_cancel.is_set():
+                Path(value).with_name('cancelled').touch()
+                self._finish_program_update_dialog()
+            else:
+                self._wait_program_updater(Path(value), time.monotonic())
+        elif kind == 'program_failed':
+            detail,cancelled=value
+            self._finish_program_update_dialog()
+            if not cancelled:
+                messagebox.showerror('Actualización no completada', detail, parent=self)
+
+    def _finish_program_update_dialog(self):
+        popup=getattr(self, '_program_update_popup', None)
+        if popup is not None and popup.winfo_exists():
+            popup.destroy()
+        self._program_update_popup=None
+
+    def _wait_program_updater(self, config, started):
+        if config.with_name('helper.ready').is_file():
+            # El auxiliar ya está ejecutándose fuera de la carpeta del programa.
+            self.after_idle(self.destroy)
+            return
+        if config.with_name('actualizacion.log').is_file() or time.monotonic()-started>60:
+            config.with_name('cancelled').touch()
+            self._finish_program_update_dialog()
+            messagebox.showerror('No se pudo iniciar el actualizador',
+                'El gestor sigue abierto y no se reemplazó el ejecutable.\n\n'
+                'Registro de la prueba: '+str(config.parent),parent=self)
+            return
+        self.after(200, lambda:self._wait_program_updater(config,started))
+
+    def _ack_program_update(self):
+        if '--update-ack' not in sys.argv:
+            return
+        try:
+            index=sys.argv.index('--update-ack')
+            path=Path(sys.argv[index+1])
+            if path.name=='app.ready' and path.parent.name.startswith('jt-updater-'):
+                path.write_text(APP_VERSION,encoding='ascii')
+        except (OSError,IndexError):
+            logging.exception('No se pudo confirmar el arranque tras actualizar')
+
 
     def refresh_catalog_and_assets(self):
         """Refresca el catálogo y vuelve a consultar el manifiesto remoto.
@@ -4332,5 +4376,30 @@ def ejecutar_instancia_unica():
         kernel32.CloseHandle(mutex)
 
 
+def write_portable_diagnostic(destination=None):
+    report = {
+        'version': APP_VERSION,
+        'compilado': bool(getattr(sys, 'frozen', False)),
+        'ejecutable': sys.executable,
+        'carpeta_base': str(BASE),
+        'recursos': str(ASSETS),
+        'recursos_presentes': ASSETS.is_dir(),
+        'biblioteca_remota': str(REMOTE_CONFIG),
+        'actualizaciones_config': str(UPDATE_CONFIG),
+        'promociones_config': str(PROMO_CONFIG),
+        'coleccion': str(OWNED_FILE),
+        'descargas': str(DOWNLOADS),
+        'pillow_disponible': Image is not None and ImageTk is not None,
+        'carpeta_temporal_pyinstaller': str(getattr(sys, '_MEIPASS', '')),
+    }
+    destination = Path(destination) if destination is not None else BASE / 'diagnostico_portatil.json'
+    destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    return destination
+
+
 if __name__ == '__main__':
-    ejecutar_instancia_unica()
+    if '--diagnostico' in sys.argv:
+        index = sys.argv.index('--diagnostico')
+        write_portable_diagnostic(sys.argv[index+1] if index+1 < len(sys.argv) else None)
+    else:
+        ejecutar_instancia_unica()
