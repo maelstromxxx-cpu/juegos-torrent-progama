@@ -1,0 +1,17 @@
+KALAKA'S SOFT — ACTUALIZADOR VISUAL v2.8.2 — BARRA CORREGIDA
+
+Se corrigió la punta derecha de la barra de progreso, que podía verse
+irregular por la superposición de un óvalo y las líneas del degradado.
+Ahora el degradado queda recortado dentro de un único extremo redondeado.
+
+Para probar sin instalar nada:
+  1. Entrá en VISTA_PREVIA.
+  2. Ejecutá Vista_Previa_Actualizador.py.
+  3. Presioná «Ver ventana de actualización» y «Actualizar ahora».
+
+El cambio se aplica a las dos copias de interfaz_actualizacion.py:
+  VISTA_PREVIA/interfaz_actualizacion.py
+  PARA_EL_KIT/interfaz_actualizacion.py
+
+No se cambió actualizador.py, el SHA-256, la lógica de descarga, la
+instalación, ni el resto del gestor. Sigue siendo una versión de PRUEBA.
