@@ -1,0 +1,21 @@
+KALAKA'S SOFT - JUEGOS TORRENT v2.8.2 - CORRECCIÓN "SIN RATA"
+
+Se corrigió la protuberancia que aparecía en la parte superior del
+anillo de sincronización al llegar al 100 %.
+
+CAUSA: los dos remates redondeados se superponían en el mismo punto
+al completarse la vuelta.
+
+SOLUCIÓN: el anillo conserva los extremos redondeados mientras el
+progreso es parcial, pero al llegar al 100 % no los superpone.
+
+CÓMO APLICAR:
+1. Reemplazá el archivo Juegos_Torrent_v2_8_2_Actualizador_Visual.py
+   de tu kit de compilación por el incluido en este ZIP.
+2. Compilá normalmente con COMPILAR_PORTATIL.bat.
+
+No se modificaron el actualizador externo, las descargas, la
+verificación SHA-256 ni otras funciones del gestor.
+
+Se verificó sintaxis y se generó una vista previa del anillo.
+Falta comprobarlo visualmente en Windows.

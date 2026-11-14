@@ -25,9 +25,10 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.1'
+APP_VERSION = '2.8.2'
 
 import actualizador
+from interfaz_actualizacion import VentanaActualizacion
 
 # Modo auxiliar: entrar antes de crear caché, recursos o la ventana principal.
 if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == '--aplicar-actualizacion':
@@ -1607,7 +1608,10 @@ def render_sync_panel(width, state):
     for i in range(max(0,math.ceil(extent))):
         draw.arc((cx-radius,cy-radius,cx+radius,cy+radius),
                  start=-90+i,end=-90+min(extent,i+1.8),fill=color(i/360),width=line)
-    if percent>0:
+    # Solo redondear los extremos cuando el progreso es parcial.
+    # Al llegar al 100 %, ambos remates coinciden arriba y crean una
+    # protuberancia de color (la "rata") sobre el anillo cerrado.
+    if 0 < percent < 100:
         rr = radius-line/2
         for angle,t in ((-90,0),(-90+extent,percent/100)):
             ax=cx+rr*math.cos(math.radians(angle));ay=cy+rr*math.sin(math.radians(angle))
@@ -2965,40 +2969,22 @@ class App(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def offer_program_update(self, info):
+        """Muestra una oferta integrada con el progreso, sin cuadros de Windows."""
         # No superponer la oferta de actualización al flyer de bienvenida.
         if self.promo_window is not None:
             self.after(500, lambda: self.offer_program_update(info))
             return
-        if not messagebox.askyesno('Actualización disponible',
-                f"Juegos Torrent {info['version']} está disponible.\n"
-                f'Versión instalada: {APP_VERSION}\n\n'
-                '¿Actualizar ahora? Se descargará y verificará el nuevo ejecutable.\n'
-                'Después el gestor se cerrará y volverá a abrir.\n'
-                'Tu biblioteca y configuraciones se conservan.', parent=self):
+        popup = getattr(self, '_program_update_popup', None)
+        if popup is not None and popup.winfo_exists():
             return
         self._update_cancel = threading.Event()
-        popup = tk.Toplevel(self)
-        self._program_update_popup = popup
-        popup.title('Juegos Torrent | Actualización')
-        popup.configure(bg=PANEL)
-        popup.transient(self)
-        popup.resizable(False, False)
-        tk.Label(popup, text='Descargando actualización', bg=PANEL, fg=FG,
-                 font=('Segoe UI', 13, 'bold')).pack(padx=24, pady=(20, 10))
-        self._program_update_label = tk.Label(popup, text='Preparando descarga...',
-                                             bg=PANEL, fg=MUTED, font=('Segoe UI', 10))
-        self._program_update_label.pack(padx=24, pady=8)
-        self._program_update_bar = BarraProgresoVerde(popup)
-        self._program_update_bar.pack(fill='x', padx=24, pady=8)
-        self._program_update_cancel_button = tk.Button(popup, text='Cancelar',
-                command=self._update_cancel.set, bg=CARD, fg=FG, relief='flat', padx=14, pady=7)
-        self._program_update_cancel_button.pack(pady=(6, 18))
-        popup.protocol('WM_DELETE_WINDOW', self._update_cancel.set)
-        popup.update_idletasks()
-        width,height=440,popup.winfo_reqheight()
-        x=self.winfo_rootx()+max(0,(self.winfo_width()-width)//2)
-        y=self.winfo_rooty()+max(0,(self.winfo_height()-height)//2)
-        popup.geometry(f'{width}x{height}+{max(0,x)}+{max(0,y)}')
+        self._program_update_popup = VentanaActualizacion(
+            self, APP_VERSION, info['version'],
+            on_start=lambda: self._start_program_update(info),
+            on_cancel=self._update_cancel.set)
+
+    def _start_program_update(self, info):
+        """Conserva la descarga, SHA-256 y reemplazo de la v2.8.1 original."""
         def worker():
             stage = None
             handoff = None
@@ -3023,21 +3009,25 @@ class App(tk.Tk):
     def _program_update_event(self, kind, value):
         if kind == 'program_offer':
             self.offer_program_update(value)
-        elif kind == 'program_progress':
-            done,total=value
-            self._program_update_bar['value'] = 100*done/max(1,total)
-            self._program_update_label.config(text=f'Descargado: {done/1048576:.1f} de {total/1048576:.1f} MB')
+            return
+        popup = getattr(self, '_program_update_popup', None)
+        if kind == 'program_progress':
+            if popup is not None and popup.winfo_exists():
+                done, total = value
+                popup.set_progress(done, total)
         elif kind == 'program_preparing':
-            self._program_update_cancel_button.config(state='disabled')
-            self._program_update_label.config(text='EXE verificado. Preparando el reinicio...')
+            if popup is not None and popup.winfo_exists():
+                popup.set_preparing()
         elif kind == 'program_handoff':
             if self._update_cancel.is_set():
                 Path(value).with_name('cancelled').touch()
                 self._finish_program_update_dialog()
             else:
+                if popup is not None and popup.winfo_exists():
+                    popup.set_restarting()
                 self._wait_program_updater(Path(value), time.monotonic())
         elif kind == 'program_failed':
-            detail,cancelled=value
+            detail, cancelled = value
             self._finish_program_update_dialog()
             if not cancelled:
                 messagebox.showerror('Actualización no completada', detail, parent=self)
