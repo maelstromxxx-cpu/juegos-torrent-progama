@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,26 @@ from urllib.request import Request, urlopen
 
 ASSET_NAME = 'JuegosTorrent.exe'
 MAX_SIZE = 1_500_000_000
-USER_AGENT = 'JuegosTorrent-Updater/1.0'
+USER_AGENT = 'JuegosTorrent-Updater/1.1'
+
+
+def trusted_urlopen(request, timeout):
+    """HTTPS seguro. En Windows valida con el almacén de confianza del sistema.
+
+    No se desactiva la verificación de certificados. Se aplica solamente a las
+    conexiones del actualizador; el catálogo mantiene su transporte original.
+    """
+    if sys.platform != 'win32':
+        return urlopen(request, timeout=timeout)
+    try:
+        import truststore
+    except ImportError as exc:
+        raise RuntimeError(
+            'Falta truststore en el ejecutable. En la PC de compilación ejecutá '
+            'python -m pip install --upgrade truststore y volvé a compilar.'
+        ) from exc
+    context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    return urlopen(request, timeout=timeout, context=context)
 
 
 def version_tuple(value):
@@ -58,7 +78,7 @@ def select_release(release, local_version, repo):
             raise ValueError('La Release no incluye SHA-256 para verificar el EXE.')
         req = Request(github_asset_url(hashes[0].get('browser_download_url', ''), repo),
                       headers={'User-Agent': USER_AGENT})
-        with urlopen(req, timeout=18) as response:
+        with trusted_urlopen(req, timeout=18) as response:
             raw = response.read(1025)
         if len(raw)>1024:
             raise ValueError('Archivo SHA-256 demasiado grande.')
@@ -75,7 +95,7 @@ def check_release(repo, local_version):
         raise ValueError('Repositorio inválido.')
     request = Request(f'https://api.github.com/repos/{repo}/releases/latest',
                       headers={'User-Agent': USER_AGENT,'Accept':'application/vnd.github+json'})
-    with urlopen(request,timeout=18) as response:
+    with trusted_urlopen(request, timeout=18) as response:
         raw=response.read(1_000_001)
     if len(raw)>1_000_000:
         raise ValueError('Respuesta de GitHub demasiado grande.')
@@ -111,7 +131,7 @@ def download_update(info, target, on_progress=lambda done,total:None):
     try:
         request=Request(info['url'],headers={'User-Agent':USER_AGENT})
         count=0
-        with os.fdopen(handle,'wb') as output, urlopen(request,timeout=45) as response:
+        with os.fdopen(handle,'wb') as output, trusted_urlopen(request, timeout=45) as response:
             while chunk:=response.read(1024*1024):
                 count+=len(chunk)
                 if count>info['size']:
