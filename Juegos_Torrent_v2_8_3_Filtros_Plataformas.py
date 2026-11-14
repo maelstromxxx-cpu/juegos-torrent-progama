@@ -25,7 +25,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.2'
+APP_VERSION = '2.8.3'
 
 import actualizador
 from interfaz_actualizacion import VentanaActualizacion
@@ -1418,7 +1418,14 @@ def _genres(raw):
 
 
 
-PORT_FILTERS = {f'PS{n} Port': f'PS{n}' for n in range(1, 6)}
+# Patrones para filtrar por la etiqueta Port: de los datos de cada juego.
+# Switch y Switch 2 se separan para evitar resultados cruzados.
+PORT_FILTERS = {f'PS{n} Port': rf'\bPS{n}\b' for n in range(1, 6)}
+PORT_FILTERS.update({
+    'Xbox One Port': r'\bXbox\s+One\b',
+    'Switch Port': r'\bSwitch\b(?!\s*2\b)',
+    'Switch 2 Port': r'\bSwitch\s*2\b',
+})
 
 def initial_panel_layout(width):
     """Reparto inicial sobre el ancho del PanedWindow, no sobre el monitor."""
@@ -1990,7 +1997,8 @@ class App(tk.Tk):
                         'Año (más antiguos)', 'Recientes',
                         'Antiguos', 'Tamaño (mayor)', 'Tamaño (menor)',
                          'Mejor puntuación', 'En Colección',
-                        'PS1 Port', 'PS2 Port', 'PS3 Port', 'PS4 Port', 'PS5 Port']
+                        'PS1 Port', 'PS2 Port', 'PS3 Port', 'PS4 Port', 'PS5 Port',
+                        'Xbox One Port', 'Switch Port', 'Switch 2 Port']
         self.sort_combo = SelectorElegante(filters, self.sort_display, sort_options,
                                            width=155, command=self.on_sort_selected)
         self.sort_combo.pack(side='right')
@@ -3549,9 +3557,10 @@ class App(tk.Tk):
         if self.sort_mode.get() == 'En Colección':
             filtered = [g for g in filtered if g['name'] in self.owned_games]
         if self.sort_mode.get() in PORT_FILTERS:
-            expected = PORT_FILTERS[self.sort_mode.get()]
-            filtered = [g for g in filtered if re.search(r'(?i)\b' + expected + r'\b',
-                        self.game_metadata.get(g['name'], {}).get('port', ''))]
+            pattern = PORT_FILTERS[self.sort_mode.get()]
+            filtered = [g for g in filtered if re.search(
+                pattern, self.game_metadata.get(g['name'], {}).get('port', '') or '',
+                flags=re.IGNORECASE)]
         filtered = self.sort_games(filtered)
         visible = [g['name'] for g in filtered]
         wanted = set(visible)
