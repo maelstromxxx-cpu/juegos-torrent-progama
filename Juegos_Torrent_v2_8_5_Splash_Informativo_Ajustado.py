@@ -2436,7 +2436,14 @@ class App(tk.Tk):
         """Ventana de bienvenida independiente, centrada y con imagen aleatoria."""
         self.splash = tk.Toplevel(self)
         self.splash.title("Kalaka's Soft | Juegos Torrent")
-        self.splash.configure(bg='#0c1118')
+        # Color clave: Windows vuelve transparentes las cuatro esquinas.
+        self._splash_chroma = '#ff00ff'
+        self.splash.configure(bg=self._splash_chroma)
+        try:
+            self.splash.wm_attributes('-transparentcolor', self._splash_chroma)
+        except tk.TclError:
+            # Otros sistemas conservan la ventana rectangular.
+            pass
         self.splash.resizable(False, False)
         self.splash.overrideredirect(True)
         self.splash.attributes('-topmost', True)
@@ -2446,7 +2453,8 @@ class App(tk.Tk):
         y = max(0, (self.winfo_screenheight() - height) // 2)
         self.splash.geometry(f'{width}x{height}+{x}+{y}')
         self.splash_canvas = tk.Canvas(self.splash, width=width, height=height,
-                                       bg='#0c1118', highlightthickness=0)
+                                       bg=self._splash_chroma, highlightthickness=0,
+                                       bd=0)
         self.splash_canvas.pack(fill='both', expand=True)
         self.splash_photo = None
         self.splash_source = None
@@ -2471,9 +2479,22 @@ class App(tk.Tk):
                 with Image.open(chosen) as picture:
                     original = picture.convert('RGB')
                 self.splash_source = original
+                self._splash_info_layout = chosen.name == 'splash_opcion_4.png'
                 # UNA imagen de fondo, sin cortar, pegar ni duplicar franjas.
                 clean = original.resize((width, height), Image.Resampling.LANCZOS)
-                self.splash_photo = ImageTk.PhotoImage(clean, master=self.splash)
+                # Silueta gaming recortada sin alterar la imagen ni su selección.
+                cut = 34
+                polygon = [(cut, 0), (width-cut-1, 0), (width-1, cut),
+                           (width-1, height-cut-1), (width-cut-1, height-1),
+                           (cut, height-1), (0, height-cut-1), (0, cut)]
+                mask = Image.new('L', (width, height), 0)
+                ImageDraw.Draw(mask).polygon(polygon, fill=255)
+                clean = clean.convert('RGBA')
+                clean.putalpha(mask)
+                # Componer contra el color clave: Tk no interpreta alfa por píxel.
+                keyed = Image.new('RGB', (width, height), self._splash_chroma)
+                keyed.paste(clean, (0, 0), clean)
+                self.splash_photo = ImageTk.PhotoImage(keyed, master=self.splash)
             except Exception:
                 logging.exception('No se pudo abrir el splash')
         self.splash_message = 'Conectando con Servidor...'
@@ -2498,10 +2519,24 @@ class App(tk.Tk):
                                fill=ACCENT, font=('Segoe UI', 25, 'bold'))
             canvas.create_text(w//2, h//2-15, text='JUEGOS TORRENT',
                                fill=FG, font=('Segoe UI', 35, 'bold'))
+        # Marco fino sobre la imagen: ocho lados y esquinas biseladas.
+        cut = 34
+        frame_points = [cut, 2, w-cut-2, 2, w-3, cut, w-3, h-cut-2,
+                        w-cut-2, h-3, cut, h-3, 2, h-cut-2, 2, cut]
+        canvas.create_polygon(frame_points, fill='', outline='#44c6e8',
+                              width=2, joinstyle=tk.ROUND)
+        # Si no hay imagen, tapar las esquinas del fondo con el color clave.
+        if not self.splash_photo:
+            corners = [[0, 0, cut, 0, 0, cut],
+                       [w, 0, w-cut, 0, w, cut],
+                       [0, h, cut, h, 0, h-cut],
+                       [w, h, w-cut, h, w, h-cut]]
+            for pts in corners:
+                canvas.create_polygon(pts, fill=self._splash_chroma, outline=self._splash_chroma)
         # Texto y barra transparentes: se dibujan sobre la imagen, sin panel opaco.
-        canvas.create_text(w//2, 369, text=self.splash_message,
+        canvas.create_text(w//2, 480 if getattr(self, '_splash_info_layout', False) else 369, text=self.splash_message,
                            fill='#f0f3f8', font=('Segoe UI', 12, 'bold'))
-        x1, x2, y1, y2 = 160, w-160, 392, 407
+        x1, x2, y1, y2 = (160, w-160, 505, 520) if getattr(self, '_splash_info_layout', False) else (160, w-160, 392, 407)
         if Image is not None and ImageTk is not None:
             bar = render_splash_bar(self._splash_progress, x2-x1, y2-y1)
             self._splash_bar_photo = ImageTk.PhotoImage(bar, master=self.splash)
@@ -2527,7 +2562,7 @@ class App(tk.Tk):
                 end = max(start, fill_left + length - fill_radius)
                 canvas.create_line(start, cy, end, cy,
                                    fill='#1ccfbb', width=9, capstyle=tk.ROUND)
-        canvas.create_text(w//2, 423, text=f'{int(self._splash_progress)}%',
+        canvas.create_text(w//2, 537 if getattr(self, '_splash_info_layout', False) else 423, text=f'{int(self._splash_progress)}%',
                            fill='#9eddb8', font=('Segoe UI', 9, 'bold'))
 
     def _animate_splash(self):
