@@ -25,7 +25,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.3'
+APP_VERSION = '2.8.5'
 
 import actualizador
 from interfaz_actualizacion import VentanaActualizacion
@@ -1427,6 +1427,9 @@ PORT_FILTERS.update({
     'Switch 2 Port': r'\bSwitch\s*2\b',
 })
 
+CARD_COLUMN_STEP = 172  # Mismo paso usado para decidir las columnas del catálogo.
+
+
 def initial_panel_layout(width):
     """Reparto inicial sobre el ancho del PanedWindow, no sobre el monitor."""
     usable = max(2, int(width) - 6)
@@ -1436,6 +1439,24 @@ def initial_panel_layout(width):
     target = min(950, usable // 2)
     target = max(min_left, min(target, usable - min_right))
     return target, min_left, min_right
+
+
+def fitted_catalog_split(width, columns, last_card_edge, pane_overhead):
+    """Acerca el divisor a la última carátula sin perder columnas ni la ficha.
+
+    ``last_card_edge`` es el borde derecho real de la última tarjeta de la
+    primera fila, medido dentro del canvas. ``pane_overhead`` incluye la barra
+    de desplazamiento y el borde del panel izquierdo.
+    """
+    fallback, min_left, min_right = initial_panel_layout(width)
+    if columns < 1 or last_card_edge <= 0:
+        return fallback
+    usable = max(2, int(width) - 6)  # Ancho del sash del PanedWindow.
+    # on_resize requiere este ancho para conservar la cantidad de columnas.
+    min_canvas_for_columns = columns * CARD_COLUMN_STEP + 16
+    canvas_width = max(min_canvas_for_columns, int(last_card_edge) + 8)
+    desired_left = canvas_width + max(0, int(pane_overhead))
+    return max(min_left, min(desired_left, usable - min_right))
 
 
 def centered_popup(window, width, desired_height=1100):
@@ -1830,6 +1851,17 @@ class App(tk.Tk):
         self.remote_base_url = ''
         self.remote_pending = set()
         self.remote_lock = threading.Lock()
+        # Una sincronización automática al iniciar y, si falla algún recurso,
+        # una única recuperación automática durante toda esta sesión.
+        # La actualización solicitada por el usuario NO consume ese límite.
+        self._auto_sync_started = False
+        self._auto_retry_scheduled = False
+        self._auto_retry_done = False
+        self._auto_failed_paths = set()
+        self._auto_retry_job = None
+        self._manual_refresh_pending = False
+        self._manual_catalog_ready = False
+        self._manual_manifest_ready = False
         self.asset_events = queue.Queue()
         self.sync_state = SyncProgressState()
         self.sync_batches = self.sync_state.active
@@ -2600,9 +2632,22 @@ class App(tk.Tk):
             self._schedule_startup_split()
             return
         target, _, _ = initial_panel_layout(width)
+        # La primera posición centrada ya permitió distribuir las carátulas.
+        # Ahora medimos su borde real y cedemos el sobrante a la ficha derecha.
+        # Se hace SOLO al abrir: un arrastre manual nunca se sobreescribe.
+        columns = self.last_columns
+        if columns > 0 and len(self.visible_game_names) >= columns:
+            row = [self.card_widgets.get(name)
+                   for name in self.visible_game_names[:columns]]
+            if all(card is not None and card.winfo_ismapped()
+                   and card.winfo_width() > 1 for card in row):
+                edge = max(card.winfo_x() + card.winfo_width() for card in row)
+                overhead = max(0, self._catalog_pane.winfo_width()
+                               - self.canvas.winfo_width())
+                target = fitted_catalog_split(width, columns, edge, overhead)
         try:
             current = body.sash_coord(0)[0]
-            if abs(current - target) > 12:
+            if abs(current - target) > 3:
                 body.sash_place(0, target, 1)
         except tk.TclError:
             self._schedule_startup_split()
@@ -2706,7 +2751,7 @@ class App(tk.Tk):
     def on_resize(self, event):
         # Cambiar el ancho del canvas es barato; no reconstruir las tarjetas.
         self.canvas.itemconfigure(self.canvas_window, width=event.width)
-        columns = min(5, max(1, (event.width - 16) // 172))
+        columns = min(5, max(1, (event.width - 16) // CARD_COLUMN_STEP))
         if columns != self.last_columns:
             self.last_columns = columns
             if self.resize_layout_job is not None:
@@ -2756,10 +2801,13 @@ class App(tk.Tk):
                      width=0 if photo else 17, height=0 if photo else 10)
         label.image = photo
 
-    def load_remote_manifest(self):
+    def load_remote_manifest(self, manual=False):
         manifest_url = read_remote_config()
         if not manifest_url:
-            return  # Sin URL configurada: se mantienen los recursos locales.
+            # Sin configuración remota se conserva la biblioteca local.
+            if manual:
+                self._on_remote_source_ready('manifest', manual=True)
+            return
 
         def worker():
             try:
@@ -2769,25 +2817,55 @@ class App(tk.Tk):
                 logging.info('Manifiesto SHA256 recibido: %s', hashlib.sha256(raw).hexdigest())
                 manifest = validate_remote_manifest(json.loads(raw.decode('utf-8-sig')))
                 base_url = manifest_url.rsplit('/', 1)[0] + '/'
-                self.after(0, lambda: self.remote_manifest_loaded(manifest, base_url))
+                self.after(0, lambda: self.remote_manifest_loaded(manifest, base_url, manual=manual))
             except Exception as exc:
                 logging.exception('No se pudo consultar el manifiesto remoto')
                 msg = str(exc)
-                self.after(0, lambda: self.status.config(text='Biblioteca remota no disponible; usando archivos locales. ' + msg[:100]))
+                self.after(0, lambda: self._remote_manifest_failed(msg, manual=manual))
         threading.Thread(target=worker, daemon=True).start()
 
-    def remote_manifest_loaded(self, manifest, base_url):
+    def _remote_manifest_failed(self, msg, manual=False):
+        self.status.config(text='Biblioteca remota no disponible; usando archivos locales. ' + msg[:100])
+        self._on_remote_source_ready('manifest', manual=manual)
+
+    def remote_manifest_loaded(self, manifest, base_url, manual=False):
         self.remote_manifest = manifest
         self.remote_base_url = base_url
         logging.info('Manifiesto remoto cargado: %s archivos', len(manifest))
-        self.schedule_remote_assets()
+        self._on_remote_source_ready('manifest', manual=manual)
 
-    def schedule_remote_assets(self, selected_only=False):
-        if not self.remote_manifest or not self.games:
+    def _on_remote_source_ready(self, source, manual=False):
+        """Evita dobles pasadas por el orden de llegada de catálogo/manifiesto.
+
+        Ambas descargas se mantienen independientes y asíncronas. La primera
+        comprobación automática empieza una sola vez, cuando ambas están listas.
+        Una recarga manual espera ambas respuestas para usar los datos nuevos.
+        """
+        if manual:
+            if not self._manual_refresh_pending:
+                return
+            if source == 'catalog':
+                self._manual_catalog_ready = True
+            elif source == 'manifest':
+                self._manual_manifest_ready = True
+            if self._manual_catalog_ready and self._manual_manifest_ready:
+                self._manual_refresh_pending = False
+                self.schedule_remote_assets(mode='manual')
             return
-        names = ([self.selected['name']] if self.selected else []) if selected_only else [g['name'] for g in self.games]
+        if self._manual_refresh_pending:
+            return
+        if not self._auto_sync_started and self.remote_manifest and self.games:
+            self._auto_sync_started = True
+            self.schedule_remote_assets(mode='initial')
+
+    def schedule_remote_assets(self, selected_only=False, mode='initial'):
+        # La pasada inicial ya examina TODOS los juegos. Volver a escanear
+        # al seleccionar uno podía reabrir el panel indefinidamente si fallaba.
+        if selected_only or not self.remote_manifest or not self.games:
+            return
+        names = [g['name'] for g in self.games]
         # Si la campaña llegó a tiempo, revisar primero sus recursos.
-        if not selected_only and self.promo_pending:
+        if self.promo_pending:
             target = self.promo_pending['juego'].casefold()
             priority = [n for n in names if n.casefold() == target or target in n.casefold()]
             names = priority + [n for n in names if n not in priority]
@@ -2795,9 +2873,9 @@ class App(tk.Tk):
         base_url = self.remote_base_url
         # La comparación SHA256 local corre fuera del hilo de Tkinter.
         threading.Thread(target=self._scan_remote_assets,
-                         args=(names, manifest, base_url), daemon=True).start()
+                         args=(names, manifest, base_url, mode), daemon=True).start()
 
-    def _scan_remote_assets(self, names, manifest, base_url):
+    def _scan_remote_assets(self, names, manifest, base_url, mode='initial'):
         index = {}
         for path in manifest:
             index.setdefault(path.casefold(), []).append(path)
@@ -2823,33 +2901,67 @@ class App(tk.Tk):
                             if not local_asset_matches(destination, digest, size):
                                 wanted.append(relative)
                         break
+        self._start_remote_batch(wanted, manifest, base_url,
+                                 recover_on_error=(mode == 'initial'))
+
+    def _start_remote_batch(self, wanted, manifest, base_url, recover_on_error=False):
+        # La misma exclusión de archivos en curso de la versión anterior.
         with self.remote_lock:
             new = [p for p in dict.fromkeys(wanted) if p not in self.remote_pending]
             self.remote_pending.update(new)
-        if new:
-            logging.info('Archivos nuevos o modificados: %s', ', '.join(new))
-            with self.remote_lock:
+            if new:
                 self.sync_batch_serial += 1
                 batch_id = self.sync_batch_serial
-            self.asset_events.put(('sync_start', batch_id, len(new)))
-            self.download_remote_batch(new, manifest, base_url, batch_id)
+        if not new:
+            return
+        logging.info('Archivos nuevos o modificados: %s', ', '.join(new))
+        self.asset_events.put(('sync_start', batch_id, len(new)))
+        self.download_remote_batch(new, manifest, base_url, batch_id,
+                                   recover_on_error=recover_on_error)
 
-    def download_remote_batch(self, paths, manifest=None, base_url=None, batch_id=None):
+    def _retry_failed_remote_assets(self):
+        """Una sola segunda pasada automática, exclusivamente de los fallidos."""
+        self._auto_retry_job = None
+        if self._auto_retry_done:
+            return
+        self._auto_retry_done = True
+        paths = tuple(self._auto_failed_paths)
+        self._auto_failed_paths.clear()
+        manifest = dict(self.remote_manifest)
+        base_url = self.remote_base_url
+
+        def worker():
+            wanted = []
+            for relative in paths:
+                if relative not in manifest:
+                    continue
+                digest, size = manifest[relative]
+                destination = BASE.joinpath(*relative.split('/'))
+                if not local_asset_matches(destination, digest, size):
+                    wanted.append(relative)
+            # No se programa una tercera pasada, aunque esta vuelva a fallar.
+            self._start_remote_batch(wanted, manifest, base_url)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def download_remote_batch(self, paths, manifest=None, base_url=None, batch_id=None,
+                              recover_on_error=False):
         manifest = manifest if manifest is not None else dict(self.remote_manifest)
         base_url = base_url if base_url is not None else self.remote_base_url
+        failed = []
         try:
             for relative in paths:
                 success = False
                 try:
                     digest, size = manifest[relative]
                     downloaded = download_library_asset(base_url, relative, digest, size)
-                    success = bool(downloaded)
+                    success = True  # También es válido si otro lote ya lo descargó.
                     if downloaded:
                         logging.info('Actualizado/descargado: %s', relative)
                         # Avisar a la interfaz por cada archivo, no al terminar todo el lote.
                         # Queue evita invocar Tkinter desde los hilos de descarga.
                         self.asset_events.put(relative)
                 except Exception:
+                    failed.append(relative)
                     logging.exception('No se pudo actualizar %s; se conserva el archivo local', relative)
                 finally:
                     if batch_id is not None:
@@ -2859,6 +2971,8 @@ class App(tk.Tk):
                 self.remote_pending.difference_update(paths)
             if batch_id is not None:
                 self.asset_events.put(('sync_end', batch_id))
+            if recover_on_error and failed:
+                self.asset_events.put(('auto_retry_needed', tuple(failed)))
 
     def _hide_sync_indicator(self):
         self.sync_hide_job = None
@@ -2903,6 +3017,12 @@ class App(tk.Tk):
                     elif kind == 'sync_end':
                         self.sync_state.end(batch_id)
                         progress_changed = True
+                    elif kind == 'auto_retry_needed':
+                        self._auto_failed_paths.update(batch_id)
+                        if not self._auto_retry_scheduled and not self._auto_retry_done:
+                            self._auto_retry_scheduled = True
+                            logging.info('Recuperación automática: una única segunda pasada en 12 segundos')
+                            self._auto_retry_job = self.after(12000, self._retry_failed_remote_assets)
                 else:
                     changed.add(event)
         except queue.Empty:
@@ -3078,10 +3198,13 @@ class App(tk.Tk):
         La sincronización de archivos utiliza el SHA256 y evita descargas
         innecesarias; las dos consultas son asíncronas.
         """
-        self.load_catalog()
-        self.load_remote_manifest()
+        self._manual_refresh_pending = True
+        self._manual_catalog_ready = False
+        self._manual_manifest_ready = False
+        self.load_catalog(manual=True)
+        self.load_remote_manifest(manual=True)
 
-    def load_catalog(self):
+    def load_catalog(self, manual=False):
         self.catalog_loading = True
         self.catalog_error = False
         self.show_catalog_loading()
@@ -3118,7 +3241,7 @@ class App(tk.Tk):
                     # Si el directorio no es escribible, seguimos usando el catálogo
                     # online. El siguiente arranque sin red necesitará una caché previa.
                     pass
-                self.after(0, lambda: self.catalog_loaded(games, offline=False))
+                self.after(0, lambda: self.catalog_loaded(games, offline=False, manual=manual))
             except Exception as exc:
                 remote_error = str(exc)
                 try:
@@ -3126,16 +3249,16 @@ class App(tk.Tk):
                     games = parse_catalog(raw)
                     if not games:
                         raise ValueError('La copia local está vacía o no es válida.')
-                    self.after(0, lambda: self.catalog_loaded(games, offline=True))
+                    self.after(0, lambda: self.catalog_loaded(games, offline=True, manual=manual))
                 except (OSError, UnicodeError, ValueError) as cache_exc:
                     message = (f'No se pudo consultar Google Drive: {remote_error}\n\n'
                                f'Tampoco hay un catálogo local válido: {cache_exc}\n\n'
                                'Conectate a Internet al menos una vez para guardar la primera copia.')
-                    self.after(0, lambda: self.catalog_failed(message))
+                    self.after(0, lambda: self.catalog_failed(message, manual=manual))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def catalog_loaded(self, games, offline=False):
+    def catalog_loaded(self, games, offline=False, manual=False):
         if hasattr(self, 'splash'):
             self.splash_message = 'Preparando carátulas y biblioteca...'
             self._splash_target = 90
@@ -3166,7 +3289,7 @@ class App(tk.Tk):
         else:
             self.status.config(text='Catálogo actualizado desde Google Drive: ' + summary)
         self.render_games()
-        self.schedule_remote_assets()
+        self._on_remote_source_ready('catalog', manual=manual)
         # Mostrar la biblioteca únicamente cuando se crearon las tarjetas.
         if self._initial_splash:
             self._splash_progress = 100
@@ -3176,7 +3299,8 @@ class App(tk.Tk):
         else:
             self.after_idle(self.hide_catalog_loading)
 
-    def catalog_failed(self, msg):
+    def catalog_failed(self, msg, manual=False):
+        self._on_remote_source_ready('catalog', manual=manual)
         self.hide_catalog_loading()
         self.catalog_loading = False
         self.catalog_error = True
