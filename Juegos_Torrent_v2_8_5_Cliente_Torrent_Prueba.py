@@ -4456,11 +4456,50 @@ class App(tk.Tk):
             self.show_text(title, 'No se pudo cargar el texto.\n\n' + msg, target=target)
             self.status.config(text='Error al cargar el texto.')
 
+    @staticmethod
+    def cliente_torrent_asociado():
+        """Consulta la asociación efectiva de Windows para .torrent (sin ejecutar nada)."""
+        if os.name != 'nt':
+            return True  # En otros sistemas, conservar el comportamiento anterior.
+        try:
+            import ctypes
+            from ctypes import wintypes
+            # ASSOCSTR_EXECUTABLE = 2; consulta la aplicación de la acción 'open'.
+            query = ctypes.windll.shlwapi.AssocQueryStringW
+            query.argtypes = [wintypes.DWORD, ctypes.c_int, wintypes.LPCWSTR,
+                              wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+            query.restype = ctypes.HRESULT
+            length = wintypes.DWORD(0)
+            query(0, 2, '.torrent', 'open', None, ctypes.byref(length))
+            if not 1 < length.value < 32768:
+                return False
+            buffer = ctypes.create_unicode_buffer(length.value)
+            return query(0, 2, '.torrent', 'open', buffer, ctypes.byref(length)) == 0 and bool(buffer.value.strip())
+        except Exception:
+            # Si la comprobación no está disponible, dejar que Windows intente abrirlo.
+            return True
+
+    def avisar_cliente_torrent(self):
+        respuesta = messagebox.askyesno(
+            'Se necesita un cliente BitTorrent',
+            'Windows no tiene una aplicación configurada para abrir archivos .torrent.\n\n'
+            'Para descargar juegos mediante torrents necesitás un cliente BitTorrent, '
+            'por ejemplo qBittorrent (gratuito y de código abierto).\n\n'
+            '¿Querés abrir la página oficial de qBittorrent?\n\n'
+            'No se descargará ni instalará nada automáticamente.',
+            parent=self)
+        if respuesta:
+            webbrowser.open('https://www.qbittorrent.org/download')
+        self.status.config(text='Se necesita configurar un cliente BitTorrent para abrir archivos .torrent.')
+
     def run_entry(self, entry):
         if self.busy:
             messagebox.showinfo('JUEGOS', 'Esperá a que termine la descarga actual.')
             return
         kind = entry['type']
+        if kind == 'torrent' and not self.cliente_torrent_asociado():
+            self.avisar_cliente_torrent()
+            return
         if kind in ('txt', 'md'):
             self.show_remote_text(entry)
             return
@@ -4535,7 +4574,10 @@ class App(tk.Tk):
                 self.status.config(text='Descarga terminada: ' + str(path))
                 messagebox.showinfo('JUEGOS', 'Descarga terminada.\n\n' + str(path))
         except OSError as exc:
-            messagebox.showerror('JUEGOS', 'Archivo descargado, pero no se pudo abrir:\n' + str(exc))
+            if kind == 'torrent' and not self.cliente_torrent_asociado():
+                self.avisar_cliente_torrent()
+            else:
+                messagebox.showerror('JUEGOS', 'Archivo descargado, pero no se pudo abrir:\n' + str(exc))
 
     def download_failed(self, msg):
         self.finish_download()
