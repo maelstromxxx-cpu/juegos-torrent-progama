@@ -2218,6 +2218,7 @@ class App(tk.Tk):
         self.download_button = BotonDescargaModerno(
             self.downloads_tab, command=self.download_selected)
         self.download_button.pack(fill='x', padx=8, pady=(10, 12))
+        self.instalar_tooltip_torrent()
         # Botón fijo dentro de la barra, sin place() ni dimensiones en unidades de texto.
         self.report_icon_photo = cargar_icono_ui('icono_reportar.png', 21, self, ajustar_margenes=True)
         self.report_button = tk.Button(
@@ -4187,6 +4188,34 @@ class App(tk.Tk):
                                  f'No se pudo leer tutoriales/guias.json:\n{exc}')
             return
 
+        # Guía integrada: funciona aunque aún no exista tutoriales/guias.json.
+        if not any('torrent' in str(item.get('titulo', '')).lower() for item in entries):
+            entries.insert(0, {
+                'titulo': 'Primeros pasos con BitTorrent',
+                'categoria': 'Descargas',
+                'descripcion': (
+                    '¿Qué es BitTorrent?\n'
+                    'BitTorrent permite descargar archivos compartiendo pequeñas partes '
+                    'de ellos entre distintas computadoras. Un archivo .torrent no '
+                    'contiene el juego: incluye la información que necesita un cliente '
+                    'BitTorrent para descargarlo.\n\n'
+                    '¿Qué necesito?\n'
+                    'Un cliente BitTorrent de tu preferencia, como qBittorrent, '
+                    'Transmission o Deluge. Recomendamos qBittorrent porque es '
+                    'gratuito, de código abierto y sin publicidad.\n\n'
+                    '1. Instalá el cliente que prefieras. Si elegís qBittorrent, '
+                    'podés descargarlo desde https://www.qbittorrent.org/download\n\n'
+                    '2. Abrí Juegos Torrent y presioná «Bajar juego». El gestor descarga '
+                    'un pequeño archivo .torrent, no el juego completo.\n\n'
+                    '3. Al abrir ese archivo, tu cliente BitTorrent mostrará los archivos y la '
+                    'carpeta de destino. Confirmá para iniciar la descarga.\n\n'
+                    '4. Esperá a que termine la descarga en el cliente. El tiempo depende '
+                    'de tu conexión y de las fuentes disponibles.\n\n'
+                    '5. Cuando termine, consultá las instrucciones del juego.\n\n'
+                    'Si Windows pregunta con qué aplicación abrir un .torrent, '
+                    'seleccioná tu cliente BitTorrent y configurá la asociación.'
+                )
+            })
         window = tk.Toplevel(self)
         window.title('Juegos Torrent | Centro de ayuda')
         window.configure(bg=BG)
@@ -4458,39 +4487,141 @@ class App(tk.Tk):
 
     @staticmethod
     def cliente_torrent_asociado():
-        """Consulta la asociación efectiva de Windows para .torrent (sin ejecutar nada)."""
+        """Comprueba que la asociación .torrent apunte a un ejecutable utilizable.
+
+        Windows puede devolver OpenWith.exe/rundll32.exe incluso cuando solo
+        aparece «Elegir una aplicación»; eso NO es un cliente BitTorrent.
+        """
         if os.name != 'nt':
-            return True  # En otros sistemas, conservar el comportamiento anterior.
+            return True
         try:
             import ctypes
             from ctypes import wintypes
-            # ASSOCSTR_EXECUTABLE = 2; consulta la aplicación de la acción 'open'.
             query = ctypes.windll.shlwapi.AssocQueryStringW
             query.argtypes = [wintypes.DWORD, ctypes.c_int, wintypes.LPCWSTR,
                               wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
-            query.restype = ctypes.HRESULT
+            query.restype = ctypes.c_long
             length = wintypes.DWORD(0)
             query(0, 2, '.torrent', 'open', None, ctypes.byref(length))
             if not 1 < length.value < 32768:
                 return False
             buffer = ctypes.create_unicode_buffer(length.value)
-            return query(0, 2, '.torrent', 'open', buffer, ctypes.byref(length)) == 0 and bool(buffer.value.strip())
+            if query(0, 2, '.torrent', 'open', buffer, ctypes.byref(length)) != 0:
+                return False
+            executable = os.path.expandvars(buffer.value.strip().strip('"'))
+            if not executable:
+                return False
+            name = Path(executable).name.lower()
+            # Lanzadores genéricos no sirven para descargar torrents.
+            if name in {'openwith.exe', 'rundll32.exe', 'explorer.exe',
+                        'dllhost.exe', 'applicationframehost.exe'}:
+                return False
+            # Aceptar clientes alternativos si el ejecutable existe.
+            return Path(executable).is_file()
         except Exception:
-            # Si la comprobación no está disponible, dejar que Windows intente abrirlo.
-            return True
+            # Si falla la consulta, no afirmar que hay un cliente.
+            return False
 
     def avisar_cliente_torrent(self):
-        respuesta = messagebox.askyesno(
-            'Se necesita un cliente BitTorrent',
-            'Windows no tiene una aplicación configurada para abrir archivos .torrent.\n\n'
-            'Para descargar juegos mediante torrents necesitás un cliente BitTorrent, '
-            'por ejemplo qBittorrent (gratuito y de código abierto).\n\n'
-            '¿Querés abrir la página oficial de qBittorrent?\n\n'
-            'No se descargará ni instalará nada automáticamente.',
-            parent=self)
-        if respuesta:
+        """Aviso único y no intrusivo, solo cuando falta asociación válida."""
+        if getattr(self, '_aviso_torrent', None) is not None:
+            if self._aviso_torrent.winfo_exists():
+                self._aviso_torrent.lift()
+                return
+        dialog = tk.Toplevel(self)
+        self._aviso_torrent = dialog
+        dialog.title('Cliente BitTorrent no detectado')
+        dialog.configure(bg=PANEL)
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.protocol('WM_DELETE_WINDOW', dialog.destroy)
+        body = tk.Frame(dialog, bg=PANEL, padx=24, pady=20)
+        body.pack(fill='both', expand=True)
+        tk.Label(body, text='ⓘ  Cliente BitTorrent no detectado', bg=PANEL,
+                 fg=ACCENT, font=('Segoe UI', 13, 'bold')).pack(anchor='w', pady=(0, 14))
+        tk.Label(body, text=('Para descargar juegos necesitás un cliente BitTorrent.\n'
+                             'Podés utilizar el que prefieras; recomendamos\n'
+                             'qBittorrent porque es gratuito, de código abierto\n'
+                             'y sin publicidad.\n\n'
+                             'Si no sabés cómo funciona, consultá nuestra guía\n'
+                             'de primeros pasos.'), bg=PANEL, fg=FG,
+                 justify='left', font=('Segoe UI', 10)).pack(anchor='w')
+        buttons = tk.Frame(body, bg=PANEL)
+        buttons.pack(fill='x', pady=(22, 0))
+
+        def ayuda():
+            dialog.destroy()
+            self.open_help_center()
+
+        def descargar():
+            dialog.destroy()
             webbrowser.open('https://www.qbittorrent.org/download')
-        self.status.config(text='Se necesita configurar un cliente BitTorrent para abrir archivos .torrent.')
+
+        tk.Button(buttons, text='Ayuda', command=ayuda, bg=CARD, fg=FG,
+                  activebackground='#344b58', activeforeground=FG,
+                  relief='flat', padx=12, pady=8, cursor='hand2').pack(side='left')
+        tk.Button(buttons, text='Descargar qBittorrent', command=descargar,
+                  bg='#20583f', fg='#e9fff2', activebackground='#246a4c',
+                  activeforeground='#e9fff2', relief='flat', padx=12, pady=8,
+                  cursor='hand2').pack(side='left', padx=8)
+        tk.Button(buttons, text='Cancelar', command=dialog.destroy,
+                  bg=PANEL, fg=FG, activebackground=CARD,
+                  activeforeground=FG, relief='flat', padx=12, pady=8,
+                  cursor='hand2').pack(side='right')
+        dialog.update_idletasks()
+        width, height = dialog.winfo_reqwidth(), dialog.winfo_reqheight()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 2)
+        dialog.geometry(f'{width}x{height}+{x}+{y}')
+        dialog.bind('<Escape>', lambda _: dialog.destroy())
+        self.status.config(text='Se necesita configurar un cliente BitTorrent.')
+
+    def instalar_tooltip_torrent(self):
+        """Tooltip informativo, sin ventanas modales al pasar el mouse."""
+        self._torrent_tip = None
+        self._torrent_tip_job = None
+
+        def ocultar(_event=None):
+            if self._torrent_tip_job is not None:
+                self.after_cancel(self._torrent_tip_job)
+                self._torrent_tip_job = None
+            if self._torrent_tip is not None:
+                self._torrent_tip.destroy()
+                self._torrent_tip = None
+
+        def mostrar():
+            self._torrent_tip_job = None
+            if self.download_button.button_state == 'disabled':
+                return
+            tip = tk.Toplevel(self)
+            tip.withdraw()
+            tip.overrideredirect(True)
+            tip.configure(bg='#1d303b')
+            tk.Label(tip, text='Descarga mediante BitTorrent',
+                     bg='#1d303b', fg=ACCENT,
+                     font=('Segoe UI', 10, 'bold')).pack(anchor='w', padx=12, pady=(10, 3))
+            tk.Label(tip, text=('Se descargará un archivo .torrent que deberás abrir\n'
+                                'con un cliente BitTorrent, como qBittorrent,\n'
+                                'para descargar el juego.'),
+                     bg='#1d303b', fg=FG, justify='left',
+                     font=('Segoe UI', 9)).pack(anchor='w', padx=12, pady=(0, 10))
+            tip.update_idletasks()
+            x = self.download_button.winfo_rootx() + 10
+            y = self.download_button.winfo_rooty() - tip.winfo_reqheight() - 6
+            if y < 0:
+                y = self.download_button.winfo_rooty() + self.download_button.winfo_height() + 6
+            tip.geometry(f'+{x}+{y}')
+            tip.deiconify()
+            self._torrent_tip = tip
+
+        def programar(_event=None):
+            ocultar()
+            self._torrent_tip_job = self.after(650, mostrar)
+
+        self.download_button.bind('<Enter>', programar, add='+')
+        self.download_button.bind('<Leave>', ocultar, add='+')
+        self.download_button.bind('<ButtonPress-1>', ocultar, add='+')
 
     def run_entry(self, entry):
         if self.busy:
@@ -4560,13 +4691,6 @@ class App(tk.Tk):
             if kind == 'torrent':
                 os.startfile(str(path))
                 self.status.config(text='Torrent abierto con el cliente asociado: ' + path.name)
-                if getattr(self, 'download_game_name', None) and self.download_game_name not in self.owned_games:
-                    name = self.download_game_name
-                    if messagebox.askyesno('Mis juegos',
-                                           f'¿Querés marcar «{name}» como descargado?\n\n'
-                                           'Esto es una marca personal: no verifica que el juego '
-                                           'haya terminado de descargarse.'):
-                        self.set_owned(name, True)
             elif kind == 'txt':
                 os.startfile(str(path))
                 self.status.config(text='Ficha abierta: ' + path.name)

@@ -1,0 +1,11 @@
+El archivo JuegosTorrent.ico es PROVISORIO (gamepad de los recursos existentes).
+Esta misma ruta se usa en el EXE y en el Setup; los accesos directos usan el icono del EXE.
+
+Para cambiarlo por el icono oficial definitivo:
+1. Preparar un .ico multi-resolucion (16, 32, 48, 256 px).
+2. Reemplazar ICONOS/JuegosTorrent.ico manteniendo el nombre.
+3. Ejecutar COMPILAR_PORTATIL.bat con una version NUEVA (no pisar la salida ya creada).
+4. Ejecutar CREAR_INSTALADOR.bat.
+
+La ventana Tkinter principal podria requerir un ajuste posterior si queres forzar
+ese mismo icono en su barra de titulo; este kit no cambia el codigo del gestor.
