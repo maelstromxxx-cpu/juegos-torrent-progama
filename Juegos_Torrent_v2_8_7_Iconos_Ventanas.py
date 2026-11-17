@@ -7,6 +7,7 @@ import tempfile
 import sys
 import subprocess
 import json
+import csv
 import hashlib
 import time
 from urllib.parse import urlparse, quote, urljoin
@@ -17,7 +18,7 @@ import queue
 import logging
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk, font as tkfont
+from tkinter import messagebox, filedialog, ttk, font as tkfont
 
 try:
     from PIL import Image, ImageTk, ImageDraw, ImageFont
@@ -25,7 +26,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.5'
+APP_VERSION = '2.8.7'
 
 import actualizador
 from interfaz_actualizacion import VentanaActualizacion
@@ -1833,6 +1834,16 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f'Juegos Torrent {APP_VERSION}')
+        # El icono predeterminado se hereda en las ventanas Toplevel y dialogos.
+        # Durante el desarrollo se usa ICONOS/; en el EXE onefile, _MEIPASS.
+        for carpeta_icono in (BASE, Path(getattr(sys, '_MEIPASS', BASE))):
+            archivo_icono = carpeta_icono / 'ICONOS' / 'JuegosTorrent.ico'
+            if archivo_icono.is_file():
+                try:
+                    self.iconbitmap(default=str(archivo_icono))
+                    break
+                except tk.TclError:
+                    pass
         self.withdraw()  # La biblioteca se muestra al terminar la carga inicial.
         self._initial_splash = True
         self._startup_split_job = None
@@ -1991,6 +2002,11 @@ class App(tk.Tk):
             filters, '', self.refresh_catalog_and_assets,
             width=34, height=27, icon='refresh')
         self.btn_recargar_catalogo.pack(side='left')
+        # Mismo estilo redondeado, borde y estados hover/pulsado que los demás botones.
+        self.btn_exportar_coleccion = BotonElegante(
+            filters, '⇩  Exportar colección', self.open_export_collection,
+            width=166, height=27)
+        self.btn_exportar_coleccion.pack(side='left', padx=(9, 0))
         self._tooltip_recarga = None
         self._tooltip_recarga_job = None
 
@@ -2218,7 +2234,6 @@ class App(tk.Tk):
         self.download_button = BotonDescargaModerno(
             self.downloads_tab, command=self.download_selected)
         self.download_button.pack(fill='x', padx=8, pady=(10, 12))
-        self.instalar_tooltip_torrent()
         # Botón fijo dentro de la barra, sin place() ni dimensiones en unidades de texto.
         self.report_icon_photo = cargar_icono_ui('icono_reportar.png', 21, self, ajustar_margenes=True)
         self.report_button = tk.Button(
@@ -3603,6 +3618,139 @@ class App(tk.Tk):
             else (getter(self.game_metadata.get(g['name'], {})) or 0),
             g['name'].casefold()))
 
+    def open_export_collection(self):
+        """Exporta un inventario, sin alterar catálogo ni colección personal."""
+        if not self.games:
+            messagebox.showinfo('Exportar colección', 'Todavía no hay juegos cargados en el catálogo.')
+            return
+        win = tk.Toplevel(self)
+        win.title('Exportar colección')
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+        content = tk.Frame(win, bg=BG, padx=22, pady=18)
+        content.pack(fill='both', expand=True)
+        tk.Label(content, text='Exportar colección', bg=BG, fg=FG,
+                 font=('Segoe UI', 14, 'bold')).pack(anchor='w', pady=(0, 12))
+        mode = tk.StringVar(value='all')
+        fmt = tk.StringVar(value='xlsx')
+        include_status = tk.BooleanVar(value=True)
+        for value, label in [('all', 'Catálogo completo'),
+                             ('downloaded', 'Solo descargados'),
+                             ('pending', 'Solo pendientes'),
+                             ('three', 'Tres hojas: catálogo, descargados y pendientes')]:
+            tk.Radiobutton(content, text=label, variable=mode, value=value,
+                           bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG,
+                           activeforeground=FG, anchor='w',
+                           font=('Segoe UI', 10)).pack(anchor='w', pady=2)
+        tk.Label(content, text='Formato', bg=BG, fg=FG,
+                 font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(15, 5))
+        format_row = tk.Frame(content, bg=BG)
+        format_row.pack(anchor='w')
+        for value, label in [('xlsx', 'Excel (.xlsx)'), ('csv', 'CSV (.csv)')]:
+            tk.Radiobutton(format_row, text=label, variable=fmt, value=value,
+                           bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG,
+                           activeforeground=FG).pack(side='left', padx=(0, 14))
+        status_check = tk.Checkbutton(content, text='Incluir columna Estado',
+                                     variable=include_status, bg=BG, fg=FG,
+                                     selectcolor=PANEL, activebackground=BG,
+                                     activeforeground=FG)
+        status_check.pack(anchor='w', pady=(10, 0))
+
+        def refresh_options(*_):
+            if mode.get() == 'three':
+                fmt.set('xlsx')
+            # Tres hojas solo existe en XLSX; no impedir cambiar luego a CSV.
+            if fmt.get() == 'csv' and mode.get() == 'three':
+                mode.set('all')
+        mode.trace_add('write', refresh_options)
+        fmt.trace_add('write', refresh_options)
+
+        def save():
+            selection = mode.get()
+            extension = fmt.get()
+            if selection == 'three' and extension != 'xlsx':
+                messagebox.showwarning('Exportar colección',
+                                       'Las tres hojas requieren formato Excel.', parent=win)
+                return
+            suffix = '.xlsx' if extension == 'xlsx' else '.csv'
+            dest = filedialog.asksaveasfilename(
+                parent=win, title='Guardar listado', defaultextension=suffix,
+                initialfile='Juegos_Torrent_Coleccion' + suffix,
+                filetypes=[('Excel', '*.xlsx')] if extension == 'xlsx' else [('CSV', '*.csv')])
+            if not dest:
+                return
+            # Consultar los metadatos actuales en disco para evitar datos desactualizados.
+            rows = []
+            for game in sorted(self.games, key=lambda item: item['name'].casefold()):
+                name = game['name']
+                metadata = find_game_data(name) or {}
+                owned = name in self.owned_games
+                rows.append([name, str(metadata.get('anio', '') or ''),
+                             str(metadata.get('genero', '') or ''),
+                             'Descargado' if owned else 'Pendiente'])
+            headers = ['Juego', 'Año', 'Género', 'Estado']
+            if not include_status.get():
+                headers = headers[:-1]
+            def filtered(which):
+                if which == 'downloaded':
+                    selected = [r for r in rows if r[3] == 'Descargado']
+                elif which == 'pending':
+                    selected = [r for r in rows if r[3] == 'Pendiente']
+                else:
+                    selected = rows
+                return selected if include_status.get() else [r[:-1] for r in selected]
+            try:
+                if extension == 'csv':
+                    with open(dest, 'w', newline='', encoding='utf-8-sig') as output:
+                        writer = csv.writer(output, delimiter=';')
+                        writer.writerow(headers)
+                        writer.writerows(filtered(selection))
+                else:
+                    try:
+                        from openpyxl import Workbook
+                        from openpyxl.styles import Font, PatternFill, Alignment
+                        from openpyxl.utils import get_column_letter
+                    except ImportError as exc:
+                        raise RuntimeError('Para exportar a Excel falta instalar openpyxl. '
+                                           'Ejecutá: pip install openpyxl') from exc
+                    wb = Workbook()
+                    sheets = [('Catálogo completo', 'all'), ('Descargados', 'downloaded'),
+                              ('Pendientes', 'pending')] if selection == 'three' else [
+                                  ({'all': 'Catálogo completo', 'downloaded': 'Descargados',
+                                    'pending': 'Pendientes'}[selection], selection)]
+                    for index, (sheet_name, subset) in enumerate(sheets):
+                        ws = wb.active if index == 0 else wb.create_sheet()
+                        ws.title = sheet_name
+                        ws.append(headers)
+                        for row in filtered(subset):
+                            ws.append(row)
+                        ws.freeze_panes = 'A2'
+                        ws.auto_filter.ref = ws.dimensions
+                        for cell in ws[1]:
+                            cell.font = Font(bold=True, color='FFFFFF')
+                            cell.fill = PatternFill('solid', fgColor='24384C')
+                            cell.alignment = Alignment(horizontal='left')
+                        for col_index, width in enumerate([58, 12, 38, 17][:len(headers)], 1):
+                            ws.column_dimensions[get_column_letter(col_index)].width = width
+                    wb.save(dest)
+            except Exception as exc:
+                messagebox.showerror('Exportar colección',
+                                     f'No se pudo guardar el archivo:\n{exc}', parent=win)
+                return
+            win.destroy()
+            messagebox.showinfo('Exportar colección',
+                                f'Archivo guardado correctamente:\n{dest}', parent=self)
+
+        tk.Button(content, text='Guardar listado', command=save,
+                  bg=ACCENT, fg='#10151d', activebackground='#78e4a5',
+                  relief='flat', cursor='hand2', padx=18, pady=8,
+                  font=('Segoe UI', 10, 'bold')).pack(anchor='e', pady=(16, 0))
+        win.update_idletasks()
+        win.geometry(f'+{self.winfo_rootx() + max(0, (self.winfo_width()-win.winfo_width())//2)}'
+                     f'+{self.winfo_rooty() + max(0, (self.winfo_height()-win.winfo_height())//2)}')
+
     @staticmethod
     def load_owned_games():
         try:
@@ -4487,13 +4635,9 @@ class App(tk.Tk):
 
     @staticmethod
     def cliente_torrent_asociado():
-        """Comprueba que la asociación .torrent apunte a un ejecutable utilizable.
-
-        Windows puede devolver OpenWith.exe/rundll32.exe incluso cuando solo
-        aparece «Elegir una aplicación»; eso NO es un cliente BitTorrent.
-        """
+        """Obtiene el ejecutable asociado a .torrent; descarta selectores genéricos."""
         if os.name != 'nt':
-            return True
+            return None
         try:
             import ctypes
             from ctypes import wintypes
@@ -4504,23 +4648,354 @@ class App(tk.Tk):
             length = wintypes.DWORD(0)
             query(0, 2, '.torrent', 'open', None, ctypes.byref(length))
             if not 1 < length.value < 32768:
-                return False
+                return None
             buffer = ctypes.create_unicode_buffer(length.value)
             if query(0, 2, '.torrent', 'open', buffer, ctypes.byref(length)) != 0:
-                return False
-            executable = os.path.expandvars(buffer.value.strip().strip('"'))
-            if not executable:
-                return False
-            name = Path(executable).name.lower()
-            # Lanzadores genéricos no sirven para descargar torrents.
-            if name in {'openwith.exe', 'rundll32.exe', 'explorer.exe',
-                        'dllhost.exe', 'applicationframehost.exe'}:
-                return False
-            # Aceptar clientes alternativos si el ejecutable existe.
-            return Path(executable).is_file()
+                return None
+            exe = Path(os.path.expandvars(buffer.value.strip().strip('"')))
+            permitidos = {'qbittorrent.exe', 'utorrent.exe', 'bittorrent.exe',
+                          'transmission-qt.exe', 'deluge.exe', 'tixati.exe',
+                          'vuze.exe', 'azureus.exe', 'biglybt.exe', 'picotorrent.exe',
+                          'tribler.exe', 'frostwire.exe'}
+            return exe if exe.is_file() and exe.name.lower() in permitidos else None
         except Exception:
-            # Si falla la consulta, no afirmar que hay un cliente.
+            return None
+
+    @staticmethod
+    def clientes_torrent_instalados():
+        """Detecta clientes habituales sin cambiar las asociaciones de Windows."""
+        if os.name != 'nt':
+            return []
+        productos = (
+            ('qBittorrent', 'qbittorrent.exe', ('qBittorrent', 'Programs/qBittorrent')),
+            ('Transmission', 'transmission-qt.exe', ('Transmission', 'Programs/Transmission')),
+            ('Deluge', 'deluge.exe', ('Deluge', 'Programs/Deluge')),
+            ('uTorrent', 'uTorrent.exe', ('uTorrent', 'Programs/uTorrent')),
+            ('BitTorrent', 'BitTorrent.exe', ('BitTorrent', 'Programs/BitTorrent')),
+            ('Tixati', 'tixati.exe', ('Tixati',)),
+            ('PicoTorrent', 'PicoTorrent.exe', ('PicoTorrent',)),
+        )
+        bases = [os.environ.get(k) for k in ('ProgramFiles', 'ProgramFiles(x86)',
+                                              'LOCALAPPDATA', 'APPDATA')]
+        encontrados = []
+        vistos = set()
+        for nombre, exe, carpetas in productos:
+            rutas = [Path(base) / carpeta / exe
+                     for base in bases if base for carpeta in carpetas]
+            if nombre == 'uTorrent':
+                local = os.environ.get('APPDATA')
+                if local:
+                    rutas.append(Path(local) / 'uTorrent' / 'uTorrent.exe')
+            try:
+                import winreg
+                for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                    for view in (0, getattr(winreg, 'KEY_WOW64_64KEY', 0),
+                                 getattr(winreg, 'KEY_WOW64_32KEY', 0)):
+                        for keyname in (rf'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{nombre}',
+                                        rf'SOFTWARE\{nombre}'):
+                            try:
+                                with winreg.OpenKey(hive, keyname, 0, winreg.KEY_READ | view) as key:
+                                    for valname in ('InstallLocation', 'Install_Dir'):
+                                        try:
+                                            val, _ = winreg.QueryValueEx(key, valname)
+                                            if val:
+                                                rutas.append(Path(os.path.expandvars(val)) / exe)
+                                        except OSError:
+                                            pass
+                            except OSError:
+                                pass
+            except ImportError:
+                pass
+            for ruta in rutas:
+                if ruta.is_file():
+                    clave = str(ruta.resolve()).lower()
+                    if clave not in vistos:
+                        encontrados.append((nombre, ruta))
+                        vistos.add(clave)
+                    break
+        return encontrados
+
+    def cliente_torrent_disponible(self):
+        return bool(self.cliente_torrent_asociado() or self.clientes_torrent_instalados())
+
+    def abrir_torrent_con_cliente(self, path):
+        asociado = self.cliente_torrent_asociado()
+        if asociado:
+            try:
+                os.startfile(str(path))
+                return
+            except OSError:
+                subprocess.Popen([str(asociado), str(path)])
+                return
+        encontrados = self.clientes_torrent_instalados()
+        if not encontrados:
+            raise FileNotFoundError('No se encontró un cliente BitTorrent disponible.')
+        if len(encontrados) == 1:
+            elegido = encontrados[0][1]
+        else:
+            # No imponemos qBittorrent cuando hay varios clientes instalados.
+            nombres = [nombre for nombre, _ in encontrados]
+            dialog = tk.Toplevel(self)
+            dialog.title('Elegir cliente BitTorrent')
+            dialog.configure(bg=PANEL)
+            dialog.transient(self)
+            dialog.resizable(False, False)
+            dialog.grab_set()
+            tk.Label(dialog, text='¿Con qué cliente querés abrir el torrent?',
+                     bg=PANEL, fg=FG, padx=20, pady=15).pack()
+            seleccionado = tk.StringVar(value=nombres[0])
+            lista = ttk.Combobox(dialog, textvariable=seleccionado, values=nombres,
+                                 state='readonly', width=34)
+            lista.pack(padx=20, pady=(0, 12))
+            resultado = []
+            def aceptar():
+                resultado.append(seleccionado.get())
+                dialog.destroy()
+            tk.Button(dialog, text='Abrir torrent', command=aceptar).pack(pady=(0, 15))
+            dialog.protocol('WM_DELETE_WINDOW', dialog.destroy)
+            self.wait_window(dialog)
+            if not resultado:
+                return
+            elegido = next(ruta for nombre, ruta in encontrados if nombre == resultado[0])
+        subprocess.Popen([str(elegido), str(path)])
+
+    @staticmethod
+    def datos_instalador_qbittorrent():
+        """Obtiene versión estable y SHA-256 desde la página OFICIAL de Windows.
+
+        Nunca inventa un hash ni utiliza uno de otra plataforma.
+        """
+        from html.parser import HTMLParser
+        class TextoHTML(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.partes = []
+            def handle_data(self, data):
+                self.partes.append(data)
+        req = Request('https://www.qbittorrent.org/download',
+                      headers={'User-Agent': 'JuegosTorrent/2.8.5'})
+        with urlopen(req, timeout=20) as response:
+            html = response.read(2_000_001)
+        if len(html) > 2_000_000:
+            raise ValueError('La página oficial excedió el tamaño esperado.')
+        parser = TextoHTML()
+        parser.feed(html.decode('utf-8', errors='replace'))
+        texto = ' '.join(' '.join(parser.partes).split())
+        win = re.search(r'Windows 10\+(.+?)(?:macOS|Linux)', texto, re.I | re.S)
+        if not win:
+            raise ValueError('No se encontró la sección de Windows en el sitio oficial.')
+        contenido = win.group(1)
+        m = re.search(r'Download qBittorrent v(\d+\.\d+\.\d+)\b', contenido)
+        if not m:
+            raise ValueError('No se pudo determinar la versión estable oficial.')
+        version = m.group(1)
+        hashes = contenido.split('Checksums and library versions', 1)
+        if len(hashes) < 2:
+            raise ValueError('No se encontraron los hashes oficiales.')
+        match = re.search(r'(?<![\d.])' + re.escape(version) +
+                          r'\s+([a-fA-F0-9]{64})\b', hashes[1])
+        if not match:
+            raise ValueError('No se encontró el SHA-256 de Windows para la versión ' + version)
+        sha = match.group(1).lower()
+        nombre = f'qbittorrent_{version}_x64_setup.exe'
+        url = ('https://downloads.sourceforge.net/project/qbittorrent/'
+               f'qbittorrent-win32/qbittorrent-{version}/{nombre}')
+        return version, nombre, url, sha
+
+    def reanudar_torrent_pendiente(self):
+        """Comprueba el cliente y reanuda solamente el torrent seleccionado previamente."""
+        if not self.cliente_torrent_disponible():
+            messagebox.showwarning('Cliente BitTorrent no detectado',
+                'Todavía no encontramos un cliente BitTorrent instalado.\n\n'
+                'Terminá la instalación y volvé a presionar «Ya lo instalé».', parent=self)
             return False
+        pendiente = getattr(self, '_torrent_pendiente', None)
+        self._torrent_pendiente = None
+        if pendiente:
+            self.status.config(text='Cliente detectado. Continuando descarga pendiente…')
+            self.after(100, lambda e=pendiente: self.run_entry(e))
+        else:
+            self.status.config(text='Cliente BitTorrent detectado. Ya podés descargar juegos.')
+        return True
+
+    def centrar_ventana_qbittorrent(self, ventana):
+        """Centra horizontalmente; centro vertical al 40 % de la pantalla."""
+        ventana.update_idletasks()
+        ancho = ventana.winfo_reqwidth()
+        alto = ventana.winfo_reqheight()
+        pantalla_ancho = ventana.winfo_screenwidth()
+        pantalla_alto = ventana.winfo_screenheight()
+        x = max(0, (pantalla_ancho - ancho) // 2)
+        y = max(0, int(pantalla_alto * 0.40 - alto / 2))
+        ventana.geometry(f'{ancho}x{alto}+{x}+{y}')
+
+    def confirmar_instalacion_qbittorrent(self):
+        """Mantiene la app abierta mientras el usuario instala; no presume éxito."""
+        dlg = tk.Toplevel(self)
+        dlg.title('Esperando instalación de qBittorrent')
+        dlg.configure(bg=PANEL)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        body = tk.Frame(dlg, bg=PANEL, padx=24, pady=22)
+        body.pack()
+        tk.Label(body, text='Esperando la instalación de qBittorrent', bg=PANEL,
+                 fg=FG, font=('Segoe UI', 12, 'bold')).pack(pady=(0, 12))
+        tk.Label(body, text=('Completá la instalación de qBittorrent.\n'
+                'Cuando termines, presioná «Ya lo instalé» para comprobarlo\n'
+                'y continuar con la descarga del juego seleccionado.'), bg=PANEL, fg=FG,
+                justify='center').pack(pady=(0, 18))
+        fila = tk.Frame(body, bg=PANEL)
+        fila.pack()
+        def verificar():
+            if self.reanudar_torrent_pendiente():
+                dlg.destroy()
+        tk.Button(fila, text='Ya lo instalé', command=verificar, bg='#20583f',
+                  fg='white', padx=14, pady=7).pack(side='left', padx=5)
+        tk.Button(fila, text='Todavía no', command=dlg.destroy, bg=CARD,
+                  fg=FG, padx=14, pady=7).pack(side='left', padx=5)
+        dlg.protocol('WM_DELETE_WINDOW', dlg.destroy)
+        dlg.update_idletasks()
+        self.centrar_ventana_qbittorrent(dlg)
+
+    def respaldo_qbittorrent_navegador(self):
+        """GitHub en navegador y página oficial como última alternativa."""
+        url = ('https://github.com/qbittorrent/qBittorrent/releases/download/'
+               'release-5.3.0/qbittorrent_5.3.0_x64_setup.exe')
+        oficial = 'https://www.qbittorrent.org/download'
+        try:
+            abierto = webbrowser.open(url, new=2)
+        except Exception:
+            abierto = False
+        if abierto:
+            respuesta = messagebox.askyesnocancel('Descarga desde navegador',
+                'Se abrió la descarga en tu navegador.\n\n'
+                '¿Pudiste descargar el instalador?\n\n'
+                'Sí: continuar con la instalación.\n'
+                'No: abrir la página oficial.\n'
+                'Cancelar: dejarlo para después.', parent=self)
+            if respuesta is True:
+                self.confirmar_instalacion_qbittorrent()
+                return
+            if respuesta is None:
+                return
+        if messagebox.askyesno('Página oficial de qBittorrent',
+            '¿Querés abrir la página oficial para descargar el instalador?', parent=self):
+            try:
+                if not webbrowser.open(oficial, new=2):
+                    raise RuntimeError('No se pudo abrir el navegador')
+            except Exception as exc:
+                messagebox.showerror('No se pudo abrir la página',
+                    f'{exc}\n\nPodés abrir manualmente: {oficial}', parent=self)
+                return
+            self.confirmar_instalacion_qbittorrent()
+
+    def instalar_qbittorrent_asistido(self):
+        """Descarga instalador oficial con SHA-256 y pide permiso para ejecutarlo."""
+        if not messagebox.askyesno('Descargar qBittorrent',
+                                   'Se descargará desde GitHub Releases el instalador oficial de qBittorrent '
+                                   'para Windows (64 bits).\n\n'
+                                   'Verificaremos su integridad antes de ofrecer ejecutarlo.\n\n'
+                                   '¿Querés continuar?', parent=self):
+            return
+        dlg = tk.Toplevel(self)
+        dlg.title('Descargando qBittorrent')
+        dlg.configure(bg=PANEL)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        estado = tk.Label(dlg, text='Consultando versión oficial…',
+                          bg=PANEL, fg=FG, padx=24, pady=18)
+        estado.pack()
+        barra = ttk.Progressbar(dlg, mode='determinate', length=360, maximum=100)
+        barra.pack(padx=24, pady=(0, 8))
+        porcentaje = tk.Label(dlg, text='0%', bg=PANEL, fg=MUTED)
+        porcentaje.pack(pady=(0, 16))
+        dlg.update_idletasks()
+        self.centrar_ventana_qbittorrent(dlg)
+        def avance(p, mensaje):
+            def actualizar():
+                if dlg.winfo_exists():
+                    barra['value'] = p
+                    porcentaje.config(text=f'{p}%')
+                    estado.config(text=mensaje)
+            self.after(0, actualizar)
+        def trabajo():
+            archivo = None
+            try:
+                version = '5.3.0'
+                nombre = 'qbittorrent_5.3.0_x64_setup.exe'
+                url = ('https://github.com/qbittorrent/qBittorrent/releases/download/'
+                       'release-5.3.0/qbittorrent_5.3.0_x64_setup.exe')
+                esperado = 'aff5b3bdc00d6e5773d6099ba30f9696dd3dfd1669ab0f64ce5c4e7168486436'
+                import tempfile as _tempfile
+                carpeta = Path(_tempfile.mkdtemp(prefix='kalaka_qbittorrent_'))
+                archivo = carpeta / nombre
+                req = Request(url, headers={'User-Agent': 'JuegosTorrent/2.8.5', 'Accept': 'application/octet-stream, */*'})
+                digest = hashlib.sha256()
+                total_leido = 0
+                with urlopen(req, timeout=35) as respuesta:
+                    content_type = respuesta.headers.get('Content-Type', '').lower()
+                    if 'text/html' in content_type:
+                        raise ValueError('GitHub devolvió HTML en lugar del instalador.')
+                    total = int(respuesta.headers.get('Content-Length') or 0)
+                    if total and total > 250_000_000:
+                        raise ValueError('El instalador excede el tamaño permitido.')
+                    with archivo.open('wb') as destino:
+                        while True:
+                            bloque = respuesta.read(256 * 1024)
+                            if not bloque:
+                                break
+                            total_leido += len(bloque)
+                            if total_leido > 250_000_000:
+                                raise ValueError('La descarga excede el tamaño permitido.')
+                            digest.update(bloque)
+                            destino.write(bloque)
+                            progreso = min(99, int(total_leido * 100 / total)) if total else 0
+                            avance(progreso, f'Descargando qBittorrent {version}…')
+                if total_leido < 1_000_000 or digest.hexdigest().lower() != esperado:
+                    raise ValueError('La verificación SHA-256 del instalador no coincide.')
+                with archivo.open('rb') as exe:
+                    if exe.read(2) != b'MZ':
+                        raise ValueError('El archivo descargado no es un ejecutable de Windows.')
+                avance(100, 'Descarga verificada correctamente.')
+                error = None
+            except Exception as exc:
+                error = str(exc)
+                if archivo:
+                    try:
+                        archivo.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            def terminar():
+                if dlg.winfo_exists():
+                    dlg.destroy()
+                if error:
+                    if messagebox.askyesno('No se pudo descargar',
+                                           'No se completó la descarga segura del instalador.\n\n'
+                                           + error[:220] + '\n\n'
+                                           '¿Probar la descarga desde el navegador?', parent=self):
+                        self.respaldo_qbittorrent_navegador()
+                    return
+                if messagebox.askyesno('qBittorrent descargado',
+                                       'El instalador oficial fue descargado y su SHA-256 '
+                                       'se verificó correctamente.\n\n'
+                                       '¿Querés ejecutarlo ahora?', parent=self):
+                    try:
+                        os.startfile(str(archivo))
+                        self.confirmar_instalacion_qbittorrent()
+                    except OSError as exc:
+                        messagebox.showerror('qBittorrent',
+                                             'No se pudo iniciar el instalador:\n' + str(exc),
+                                             parent=self)
+                else:
+                    messagebox.showinfo('qBittorrent',
+                                        'El instalador quedó guardado en:\n' + str(archivo) +
+                                        '\n\nCuando lo instales, volvé a comprobar el cliente.',
+                                        parent=self)
+                    self.confirmar_instalacion_qbittorrent()
+            self.after(0, terminar)
+        threading.Thread(target=trabajo, daemon=True).start()
 
     def avisar_cliente_torrent(self):
         """Aviso único y no intrusivo, solo cuando falta asociación válida."""
@@ -4556,7 +5031,7 @@ class App(tk.Tk):
 
         def descargar():
             dialog.destroy()
-            webbrowser.open('https://www.qbittorrent.org/download')
+            self.instalar_qbittorrent_asistido()
 
         tk.Button(buttons, text='Ayuda', command=ayuda, bg=CARD, fg=FG,
                   activebackground='#344b58', activeforeground=FG,
@@ -4577,58 +5052,13 @@ class App(tk.Tk):
         dialog.bind('<Escape>', lambda _: dialog.destroy())
         self.status.config(text='Se necesita configurar un cliente BitTorrent.')
 
-    def instalar_tooltip_torrent(self):
-        """Tooltip informativo, sin ventanas modales al pasar el mouse."""
-        self._torrent_tip = None
-        self._torrent_tip_job = None
-
-        def ocultar(_event=None):
-            if self._torrent_tip_job is not None:
-                self.after_cancel(self._torrent_tip_job)
-                self._torrent_tip_job = None
-            if self._torrent_tip is not None:
-                self._torrent_tip.destroy()
-                self._torrent_tip = None
-
-        def mostrar():
-            self._torrent_tip_job = None
-            if self.download_button.button_state == 'disabled':
-                return
-            tip = tk.Toplevel(self)
-            tip.withdraw()
-            tip.overrideredirect(True)
-            tip.configure(bg='#1d303b')
-            tk.Label(tip, text='Descarga mediante BitTorrent',
-                     bg='#1d303b', fg=ACCENT,
-                     font=('Segoe UI', 10, 'bold')).pack(anchor='w', padx=12, pady=(10, 3))
-            tk.Label(tip, text=('Se descargará un archivo .torrent que deberás abrir\n'
-                                'con un cliente BitTorrent, como qBittorrent,\n'
-                                'para descargar el juego.'),
-                     bg='#1d303b', fg=FG, justify='left',
-                     font=('Segoe UI', 9)).pack(anchor='w', padx=12, pady=(0, 10))
-            tip.update_idletasks()
-            x = self.download_button.winfo_rootx() + 10
-            y = self.download_button.winfo_rooty() - tip.winfo_reqheight() - 6
-            if y < 0:
-                y = self.download_button.winfo_rooty() + self.download_button.winfo_height() + 6
-            tip.geometry(f'+{x}+{y}')
-            tip.deiconify()
-            self._torrent_tip = tip
-
-        def programar(_event=None):
-            ocultar()
-            self._torrent_tip_job = self.after(650, mostrar)
-
-        self.download_button.bind('<Enter>', programar, add='+')
-        self.download_button.bind('<Leave>', ocultar, add='+')
-        self.download_button.bind('<ButtonPress-1>', ocultar, add='+')
-
     def run_entry(self, entry):
         if self.busy:
             messagebox.showinfo('JUEGOS', 'Esperá a que termine la descarga actual.')
             return
         kind = entry['type']
-        if kind == 'torrent' and not self.cliente_torrent_asociado():
+        if kind == 'torrent' and not self.cliente_torrent_disponible():
+            self._torrent_pendiente = dict(entry)
             self.avisar_cliente_torrent()
             return
         if kind in ('txt', 'md'):
@@ -4689,8 +5119,8 @@ class App(tk.Tk):
         self.finish_download()
         try:
             if kind == 'torrent':
-                os.startfile(str(path))
-                self.status.config(text='Torrent abierto con el cliente asociado: ' + path.name)
+                self.abrir_torrent_con_cliente(path)
+                self.status.config(text='Torrent abierto con el cliente BitTorrent: ' + path.name)
             elif kind == 'txt':
                 os.startfile(str(path))
                 self.status.config(text='Ficha abierta: ' + path.name)
@@ -4698,7 +5128,7 @@ class App(tk.Tk):
                 self.status.config(text='Descarga terminada: ' + str(path))
                 messagebox.showinfo('JUEGOS', 'Descarga terminada.\n\n' + str(path))
         except OSError as exc:
-            if kind == 'torrent' and not self.cliente_torrent_asociado():
+            if kind == 'torrent' and not self.cliente_torrent_disponible():
                 self.avisar_cliente_torrent()
             else:
                 messagebox.showerror('JUEGOS', 'Archivo descargado, pero no se pudo abrir:\n' + str(exc))
