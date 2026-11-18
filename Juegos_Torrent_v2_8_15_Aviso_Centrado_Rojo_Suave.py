@@ -26,7 +26,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.7'
+APP_VERSION = '2.8.14'
 
 import actualizador
 from interfaz_actualizacion import VentanaActualizacion
@@ -1158,13 +1158,15 @@ def find_game_data(name):
                     'puntuación': 'puntuacion', 'puntuacion': 'puntuacion',
                     'metacritic': 'metacritic',
                     'repacker': 'repacker', 'repack': 'repacker',
-                    'repackeador': 'repacker', 'port': 'port', 'crack': 'crack'}
+                    'repackeador': 'repacker', 'port': 'port', 'crack': 'crack',
+                    'aviso instrucciones': 'aviso_instrucciones',
+                    'motivo instrucciones': 'motivo_instrucciones'}
             for line in raw.splitlines():
                 key, sep, value = line.partition(':')
                 if sep and key.strip().casefold() in keys:
                     normalized = keys[key.strip().casefold()]
                     if value.strip():
-                        clean_value = value.strip() if normalized == 'genero' else value.strip()[:80]
+                        clean_value = value.strip() if normalized in ('genero', 'motivo_instrucciones') else value.strip()[:80]
                         if normalized == 'idioma':
                             aliases = {'español': 'Español', 'espanol': 'Español',
                                        'ingles': 'Ingles', 'inglés': 'Ingles', 'multi': 'MULTI'}
@@ -1834,16 +1836,6 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f'Juegos Torrent {APP_VERSION}')
-        # El icono predeterminado se hereda en las ventanas Toplevel y dialogos.
-        # Durante el desarrollo se usa ICONOS/; en el EXE onefile, _MEIPASS.
-        for carpeta_icono in (BASE, Path(getattr(sys, '_MEIPASS', BASE))):
-            archivo_icono = carpeta_icono / 'ICONOS' / 'JuegosTorrent.ico'
-            if archivo_icono.is_file():
-                try:
-                    self.iconbitmap(default=str(archivo_icono))
-                    break
-                except tk.TclError:
-                    pass
         self.withdraw()  # La biblioteca se muestra al terminar la carga inicial.
         self._initial_splash = True
         self._startup_split_job = None
@@ -2244,6 +2236,18 @@ class App(tk.Tk):
             relief='flat', bd=0, cursor='hand2',
             font=('Segoe UI Emoji', 14), padx=5, pady=4)
         self.report_button.pack(side='right', anchor='center', padx=(4, 8), pady=3)
+        # Aviso breve integrado en la barra de pestañas, a la izquierda de la bandera.
+        # No tiene título: solo el icono de advertencia y el texto personalizado.
+        self.instructions_notice = tk.Frame(tabs.nav, bg='#56333d', padx=12, pady=6)
+        self.instructions_notice_icon = tk.Label(
+            self.instructions_notice, text='⚠', bg='#56333d', fg='#ff9eaa',
+            font=('Segoe UI Symbol', 11, 'bold'))
+        self.instructions_notice_icon.pack(side='left', padx=(0, 5))
+        self.instructions_notice_text = tk.Label(
+            self.instructions_notice, bg='#56333d', fg='#ffe4e8',
+            font=('Segoe UI', 9), anchor='w', justify='left')
+        self.instructions_notice_text.pack(side='left')
+        # Se empaqueta solo cuando el juego tiene el aviso activo y un motivo.
         self._report_tip = None
         self._report_tip_job = None
 
@@ -3388,79 +3392,132 @@ class App(tk.Tk):
                   relief='flat', pady=8).pack(fill='x', padx=18, pady=(0, 12))
 
     def open_screenshot_gallery(self, paths, start_index=0):
-        """Galería independiente; no modifica las miniaturas ni la ficha."""
+        """Lightbox real: una sola superficie, sin marco de galería.
+
+        Captura visualmente el gestor, lo oscurece y dibuja la imagen opaca
+        encima. Así no se atenúa la captura ni se pierde el foco entre capas.
+        """
         paths = list(paths)
         if not paths:
             return
-        window = tk.Toplevel(self)
-        window.title('Galería de capturas - Juegos Torrent')
-        window.configure(bg=BG)
-        window.geometry('1050x740')
-        window.minsize(460, 330)
-        window.transient(self)
+        if Image is None or ImageTk is None:
+            messagebox.showwarning('Galería', 'La galería superpuesta requiere Pillow (pip install pillow).')
+            return
+        try:
+            from PIL import ImageGrab, ImageEnhance
+        except ImportError:
+            messagebox.showwarning('Galería', 'No se pudo cargar ImageGrab de Pillow.')
+            return
 
-        state = {'index': start_index % len(paths), 'photo': None, 'job': None}
-        header = tk.Frame(window, bg=BG)
-        header.pack(fill='x', padx=18, pady=(12, 4))
-        title = tk.Label(header, text=self.selected['name'] if self.selected else 'Capturas',
-                         fg=FG, bg=BG, font=('Segoe UI', 12, 'bold'), anchor='w')
-        title.pack(side='left', fill='x', expand=True)
-        counter = tk.Label(header, text='', fg=ACCENT, bg=BG, font=('Segoe UI', 11, 'bold'))
-        counter.pack(side='right')
+        self.update_idletasks()
+        rx, ry = self.winfo_rootx(), self.winfo_rooty()
+        rw, rh = self.winfo_width(), self.winfo_height()
+        # Captura del gestor ANTES de mostrar el lightbox.
+        try:
+            backdrop_image = ImageGrab.grab(bbox=(rx, ry, rx + rw, ry + rh))
+            backdrop_image = ImageEnhance.Brightness(backdrop_image).enhance(0.27)
+        except Exception as exc:
+            messagebox.showerror('Galería', f'No se pudo capturar el fondo del gestor:\n{exc}')
+            return
 
-        center = tk.Frame(window, bg=BG)
-        center.pack(fill='both', expand=True, padx=12, pady=5)
-        center.grid_columnconfigure(1, weight=1)
-        center.grid_rowconfigure(0, weight=1)
-        picture_area = tk.Frame(center, bg=BG)
-        picture_area.grid(row=0, column=1, sticky='nsew')
-        picture = tk.Label(picture_area, bg=BG, fg=FG, text='Cargando imagen…')
-        picture.pack(fill='both', expand=True)
+        overlay = tk.Toplevel(self)
+        overlay.withdraw()
+        overlay.overrideredirect(True)
+        overlay.configure(bg='#05070a')
+        overlay.geometry(f'{rw}x{rh}+{rx}+{ry}')
+        canvas = tk.Canvas(overlay, width=rw, height=rh, bg='#05070a',
+                           highlightthickness=0, bd=0, cursor='arrow')
+        canvas.pack(fill='both', expand=True)
+        state = {'index': start_index % len(paths), 'photo': None,
+                 'background': ImageTk.PhotoImage(backdrop_image, master=overlay),
+                 'closed': False, 'bounds': None}
+        canvas.create_image(0, 0, image=state['background'], anchor='nw', tags='backdrop')
 
-        def display():
-            state['job'] = None
-            if not window.winfo_exists():
+        def close_gallery(_event=None):
+            if state['closed']:
                 return
-            path = paths[state['index']]
-            width = max(100, picture_area.winfo_width() - 18)
-            height = max(100, picture_area.winfo_height() - 18)
-            photo = load_local_image(path, width, height, master=window)
-            state['photo'] = photo  # Mantener referencia para evitar pyimage inexistente.
-            picture.config(image=photo if photo is not None else '',
-                           text='' if photo is not None else 'No se pudo abrir esta captura.')
-            counter.config(text=f'{state["index"] + 1} de {len(paths)}')
-            filename.config(text=path.name)
+            state['closed'] = True
+            try:
+                overlay.grab_release()
+            except tk.TclError:
+                pass
+            overlay.destroy()
+            try:
+                self.focus_force()
+            except tk.TclError:
+                pass
 
-        def schedule_display(_event=None):
-            if state['job'] is not None:
-                window.after_cancel(state['job'])
-            state['job'] = window.after(90, display)
+        def draw():
+            if state['closed']:
+                return
+            canvas.delete('foreground')
+            path = paths[state['index']]
+            max_w, max_h = max(180, rw - 180), max(150, rh - 135)
+            try:
+                with Image.open(path) as source:
+                    picture = source.convert('RGBA')
+                picture.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+                state['photo'] = ImageTk.PhotoImage(picture, master=overlay)
+                iw, ih = picture.size
+                x, y = rw // 2, rh // 2
+                canvas.create_image(x, y, image=state['photo'], tags='foreground')
+                state['bounds'] = (x-iw//2, y-ih//2, x+iw//2, y+ih//2)
+            except Exception:
+                state['photo'] = None
+                state['bounds'] = None
+                canvas.create_text(rw//2, rh//2, text='No se pudo abrir esta captura',
+                                   fill='white', font=('Segoe UI', 14), tags='foreground')
+
+            # Botones pequeños, circulares y flotantes, sin panel ni título.
+            cy = rh // 2
+            for tag, cx, glyph in (('prev', max(38, rw//2-max_w//2-38), '❮'),
+                                   ('next', min(rw-38, rw//2+max_w//2+38), '❯')):
+                canvas.create_oval(cx-24, cy-24, cx+24, cy+24,
+                                   fill='#263541', outline='#55707d', width=1,
+                                   tags=('foreground', tag))
+                canvas.create_text(cx, cy, text=glyph, fill='#62e6ae',
+                                   font=('Segoe UI Symbol', 18, 'bold'),
+                                   tags=('foreground', tag))
+            canvas.create_oval(rw-65, 20, rw-21, 64, fill='#263541',
+                               outline='#55707d', tags=('foreground', 'close'))
+            canvas.create_text(rw-43, 42, text='✕', fill='white',
+                               font=('Segoe UI', 17), tags=('foreground', 'close'))
+            canvas.create_text(rw//2, rh-32, text=f'{state["index"]+1} de {len(paths)}',
+                               fill='#b9c8d3', font=('Segoe UI', 10), tags='foreground')
 
         def move(step):
             state['index'] = (state['index'] + step) % len(paths)
-            schedule_display()
+            draw()
 
-        prev = tk.Button(center, text='❮', command=lambda: move(-1), bg=CARD, fg=ACCENT,
-                         activebackground=PANEL, activeforeground=FG, relief='flat',
-                         font=('Segoe UI', 20, 'bold'), width=3, cursor='hand2')
-        prev.grid(row=0, column=0, sticky='ns', padx=(0, 8))
-        nxt = tk.Button(center, text='❯', command=lambda: move(1), bg=CARD, fg=ACCENT,
-                        activebackground=PANEL, activeforeground=FG, relief='flat',
-                        font=('Segoe UI', 20, 'bold'), width=3, cursor='hand2')
-        nxt.grid(row=0, column=2, sticky='ns', padx=(8, 0))
-        footer = tk.Frame(window, bg=BG)
-        footer.pack(fill='x', padx=18, pady=(4, 12))
-        filename = tk.Label(footer, text='', fg=MUTED, bg=BG, anchor='w')
-        filename.pack(side='left', fill='x', expand=True)
-        tk.Label(footer, text='← Anterior  ·  Siguiente →  ·  Esc para cerrar',
-                 fg=MUTED, bg=BG).pack(side='right')
+        def clicked(event):
+            hit = canvas.find_overlapping(event.x, event.y, event.x, event.y)
+            tags = set()
+            for item in hit:
+                tags.update(canvas.gettags(item))
+            if 'close' in tags:
+                close_gallery()
+            elif 'prev' in tags:
+                move(-1)
+            elif 'next' in tags:
+                move(1)
+            elif 'foreground' not in tags:
+                close_gallery()
+            # Un clic sobre la captura no la cierra.
 
-        window.bind('<Left>', lambda _: move(-1))
-        window.bind('<Right>', lambda _: move(1))
-        window.bind('<Escape>', lambda _: window.destroy())
-        picture_area.bind('<Configure>', schedule_display)
-        window.after(120, display)
-        window.focus_set()
+        canvas.bind('<Button-1>', clicked)
+        overlay.bind('<Escape>', close_gallery)
+        overlay.bind('<Left>', lambda _e: move(-1))
+        overlay.bind('<Right>', lambda _e: move(1))
+        overlay.bind('<Alt-F4>', close_gallery)
+        overlay.protocol('WM_DELETE_WINDOW', close_gallery)
+        overlay.deiconify()
+        overlay.lift(self)
+        draw()
+        overlay.focus_force()
+        try:
+            overlay.grab_set()
+        except tk.TclError:
+            pass
 
     def on_gallery_resize(self, event):
         """Reorganiza las miniaturas al cambiar el ancho del panel, sin parpadeos."""
@@ -3526,6 +3583,17 @@ class App(tk.Tk):
                 slot.pack_forget()
         # Siempre visible: el botón de marcado también funciona sin ficha de datos.
         self.info_bar.pack(fill='x', padx=18, pady=(2, 8), before=self.tabs)
+        motivo = data.get('motivo_instrucciones', '').strip()
+        # Un motivo escrito manualmente en un TXT antiguo activa el aviso.
+        # El campo "Aviso instrucciones: No" permite desactivarlo explícitamente.
+        estado_aviso = data.get('aviso_instrucciones', '').strip().casefold()
+        if motivo and estado_aviso not in ('no', 'false', '0', 'off'):
+            self.instructions_notice_text.config(text=motivo)
+            # Centrado visual dentro del espacio libre entre pestañas y bandera.
+            self.instructions_notice.place(relx=0.59, rely=0.5, anchor='center')
+            self.instructions_notice.lift()
+        else:
+            self.instructions_notice.place_forget()
 
     def on_detail_resize(self, event):
         # El texto acompaña al ancho disponible al redimensionar la ventana.
