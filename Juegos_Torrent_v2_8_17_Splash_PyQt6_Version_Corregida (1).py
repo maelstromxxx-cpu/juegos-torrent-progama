@@ -26,7 +26,201 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.14'
+APP_VERSION = '2.8.17'
+
+
+def _run_qt_splash_child():
+    """Proceso gráfico separado: evita mezclar los event loops de Qt y Tk."""
+    try:
+        import queue as _queue
+        import threading as _threading
+        from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRectF, QPointF
+        from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QFont, QLinearGradient, QRadialGradient, QPainterPath
+        from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QGraphicsOpacityEffect
+    except ImportError:
+        raise SystemExit(2)
+
+
+    class Splash(QWidget):
+        WIDTH, HEIGHT = 680, 380
+        DURATION_MS = 3500
+
+        def __init__(self):
+            super().__init__()
+            self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            self.setFixedSize(self.WIDTH, self.HEIGHT)
+            self.progress = 0.0
+            self.elapsed_ms = 0
+            self.main_window = None
+            self.finished_by_parent = False
+            self.target = 25.0
+            self.steps = (
+                (0, 'Iniciando motor gráfico...'),
+                (27, 'Escaneando juegos...'),
+                (58, 'Sincronizando...'),
+                (91, 'Finalizando carga...'),
+                (100, '¡Listo!'),
+            )
+            self.opacity_effect = QGraphicsOpacityEffect(self)
+            self.setGraphicsEffect(self.opacity_effect)
+            self.opacity_effect.setOpacity(0)
+            self.fade = QPropertyAnimation(self.opacity_effect, b'opacity', self)
+            self.fade.setDuration(650)
+            self.fade.setStartValue(0.0)
+            self.fade.setEndValue(1.0)
+            self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self.timer = QTimer(self)
+            self.timer.setInterval(16)
+            self.timer.timeout.connect(self.advance)
+            self.center_on_screen()
+
+        def center_on_screen(self):
+            screen = QApplication.screenAt(QPointF(0, 0).toPoint()) or QApplication.primaryScreen()
+            if screen:
+                area = screen.availableGeometry()
+                self.move(area.center().x() - self.width() // 2,
+                          area.center().y() - self.height() // 2)
+
+        def start(self):
+            self.show()
+            self.fade.start()
+            self.timer.start()
+
+        def advance(self):
+            self.elapsed_ms += self.timer.interval()
+            self.progress = min(self.target, self.progress + 0.52)
+            self.update()
+            if self.finished_by_parent and self.progress >= 100:
+                self.timer.stop()
+                QTimer.singleShot(220, self.finish)
+
+        def finish(self):
+            QApplication.instance().quit()
+
+        def paintEvent(self, event):
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            bounds = QRectF(1.5, 1.5, self.width() - 3, self.height() - 3)
+            clip = QPainterPath()
+            clip.addRoundedRect(bounds, 14, 14)
+            p.setClipPath(clip)
+
+            # Fondo radial oscuro, con un brillo violeta sutil hacia la derecha.
+            p.fillPath(clip, QColor('#0F1115'))
+            radial = QRadialGradient(QPointF(515, 130), 520)
+            radial.setColorAt(0, QColor(95, 45, 165, 92))
+            radial.setColorAt(0.55, QColor(30, 20, 65, 125))
+            radial.setColorAt(1, QColor(15, 17, 21, 0))
+            p.fillPath(clip, radial)
+
+            # Detalles decorativos finos y poco invasivos.
+            p.setPen(QPen(QColor(0, 240, 255, 25), 1))
+            for x in range(35, 690, 44):
+                p.drawLine(x, 0, x - 105, 380)
+
+            # Logotipo geométrico: rombo + pequeño control estilizado.
+            p.save()
+            p.translate(340, 104)
+            glow = QPen(QColor(0, 240, 255, 30), 13)
+            glow.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(glow)
+            diamond = QPainterPath()
+            diamond.moveTo(0, -42)
+            diamond.lineTo(42, 0)
+            diamond.lineTo(0, 42)
+            diamond.lineTo(-42, 0)
+            diamond.closeSubpath()
+            p.drawPath(diamond)
+            p.setPen(QPen(QColor('#00F0FF'), 2.2))
+            p.drawPath(diamond)
+            p.drawLine(-15, 0, -3, 0)
+            p.drawLine(-9, -6, -9, 6)
+            p.setBrush(QColor('#00F0FF'))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(12, -5), 3, 3)
+            p.drawEllipse(QPointF(20, 3), 3, 3)
+            p.restore()
+
+            # Título.
+            p.setPen(QColor('#F8FAFF'))
+            title_font = QFont('Segoe UI', 30, QFont.Weight.Bold)
+            p.setFont(title_font)
+            p.drawText(QRectF(30, 164, 620, 60), Qt.AlignmentFlag.AlignCenter, 'JUEGOS TORRENT')
+            p.setFont(QFont('Segoe UI', 10))
+            p.setPen(QColor('#9AA6B8'))
+            p.drawText(QRectF(30, 220, 620, 24), Qt.AlignmentFlag.AlignCenter,
+                       'TU BIBLIOTECA DE JUEGOS PARA PC')
+
+            # Badge de versión.
+            badge = QRectF(594, 24, 58, 25)
+            p.setBrush(QColor(0, 240, 255, 18))
+            p.setPen(QPen(QColor(0, 240, 255, 70), 1))
+            p.drawRoundedRect(badge, 8, 8)
+            p.setFont(QFont('Consolas', 9))
+            p.setPen(QColor('#A9E9F0'))
+            p.drawText(badge, Qt.AlignmentFlag.AlignCenter, 'v1.0.0')
+
+            # Estado y porcentaje, suficientemente separados del borde inferior.
+            message = self.steps[0][1]
+            for threshold, label in self.steps:
+                if self.progress >= threshold:
+                    message = label
+            p.setFont(QFont('Consolas', 10))
+            p.setPen(QColor('#B9C0CE'))
+            p.drawText(QRectF(45, 283, 510, 24), Qt.AlignmentFlag.AlignVCenter, message)
+            p.setPen(QColor('#9AA6B8'))
+            p.drawText(QRectF(565, 283, 65, 24),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                       f'{round(self.progress)}%')
+
+            # Barra de 4 px: violeta -> cian, recortada según progreso.
+            bar = QRectF(48, 319, 584, 4)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor('#303442'))
+            p.drawRoundedRect(bar, 2, 2)
+            filled = QRectF(bar.x(), bar.y(), bar.width() * self.progress / 100, bar.height())
+            if filled.width() > 0:
+                grad = QLinearGradient(bar.topLeft(), bar.topRight())
+                grad.setColorAt(0, QColor('#7000FF'))
+                grad.setColorAt(1, QColor('#00F0FF'))
+                p.setBrush(grad)
+                p.drawRoundedRect(filled, 2, 2)
+
+            # Borde de 1 px con cian de baja opacidad.
+            p.setClipping(False)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(0, 240, 255, 95), 1))
+            p.drawRoundedRect(bounds, 14, 14)
+            p.end()
+    app = QApplication(sys.argv)
+    splash = Splash()
+    commands = _queue.Queue()
+    def reader():
+        for line in sys.stdin:
+            commands.put(line.strip())
+        commands.put('DONE')
+    _threading.Thread(target=reader, daemon=True).start()
+    def poll():
+        try:
+            while True:
+                command = commands.get_nowait()
+                if command == 'DONE':
+                    splash.finished_by_parent = True
+                    splash.target = 100
+                elif command.startswith('TARGET:'):
+                    splash.target = max(splash.target, min(95, float(command[7:])))
+        except _queue.Empty:
+            pass
+    clock = QTimer()
+    clock.timeout.connect(poll)
+    clock.start(35)
+    splash.start()
+    app.exec()
+
+if __name__ == '__main__' and '--qt-splash-child' in sys.argv:
+    _run_qt_splash_child()
+    raise SystemExit(0)
 
 import actualizador
 from interfaz_actualizacion import VentanaActualizacion
@@ -2453,7 +2647,27 @@ class App(tk.Tk):
         self.load_remote_manifest()
 
     def _build_startup_splash(self):
-        """Ventana de bienvenida independiente, centrada y con imagen aleatoria."""
+        """Splash Qt en proceso separado; fallback a Tk si falta PyQt6."""
+        self._qt_splash = None
+        self._splash_started_at = __import__('time').monotonic()
+        try:
+            command = ([sys.executable] if getattr(sys, 'frozen', False)
+                       else [sys.executable, str(Path(__file__).resolve())])
+            flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            self._qt_splash = subprocess.Popen(
+                command + ['--qt-splash-child'], stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                text=True, creationflags=flags)
+            time.sleep(0.06)
+            if self._qt_splash.poll() is None:
+                self.splash = None
+                self._splash_progress = 8
+                self._splash_target = 24
+                self._splash_job = None
+                return
+            self._qt_splash = None
+        except (OSError, ValueError):
+            self._qt_splash = None
         self.splash = tk.Toplevel(self)
         self.splash.title("Kalaka's Soft | Juegos Torrent")
         # Color clave: Windows vuelve transparentes las cuatro esquinas.
@@ -2596,7 +2810,14 @@ class App(tk.Tk):
 
     def show_catalog_loading(self):
         """Al refrescar, usar estado de la biblioteca sin taparla con un splash."""
-        if self._initial_splash and self.splash.winfo_exists():
+        if self._initial_splash and getattr(self, '_qt_splash', None):
+            try:
+                self._qt_splash.stdin.write('TARGET:55\n')
+                self._qt_splash.stdin.flush()
+            except (OSError, ValueError):
+                pass
+            return
+        if self._initial_splash and self.splash is not None and self.splash.winfo_exists():
             self.splash_message = 'Conectando con Servidor...'
             self._splash_target = max(self._splash_target, 35)
             self._redraw_splash()
@@ -2608,7 +2829,15 @@ class App(tk.Tk):
             if self._splash_job is not None:
                 self.after_cancel(self._splash_job)
                 self._splash_job = None
-            if self.splash.winfo_exists():
+            if getattr(self, '_qt_splash', None):
+                try:
+                    self._qt_splash.stdin.write('DONE\n')
+                    self._qt_splash.stdin.flush()
+                    self._qt_splash.stdin.close()
+                except (OSError, ValueError):
+                    pass
+                self._qt_splash = None
+            elif self.splash is not None and self.splash.winfo_exists():
                 self.splash.destroy()
             self.deiconify()
             try:
@@ -3317,7 +3546,14 @@ class App(tk.Tk):
         if hasattr(self, 'splash'):
             self.splash_message = 'Preparando carátulas y biblioteca...'
             self._splash_target = 90
-            self._redraw_splash()
+            if getattr(self, '_qt_splash', None):
+                try:
+                    self._qt_splash.stdin.write('TARGET:90\n')
+                    self._qt_splash.stdin.flush()
+                except (OSError, ValueError, AttributeError):
+                    pass
+            elif self.splash is not None and self.splash.winfo_exists():
+                self._redraw_splash()
         self.catalog_loading = False
         self.catalog_error = False
         self.games = group_catalog(games)
@@ -3348,7 +3584,8 @@ class App(tk.Tk):
         # Mostrar la biblioteca únicamente cuando se crearon las tarjetas.
         if self._initial_splash:
             self._splash_progress = 100
-            self._redraw_splash()
+            if self.splash is not None and self.splash.winfo_exists():
+                self._redraw_splash()
             elapsed_ms = int((__import__('time').monotonic() - self._splash_started_at) * 1000)
             self.after(max(250, 1800 - elapsed_ms), self.hide_catalog_loading)
         else:
