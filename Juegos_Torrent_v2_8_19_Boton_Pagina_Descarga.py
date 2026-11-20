@@ -159,7 +159,7 @@ def _run_qt_splash_child():
             p.drawRoundedRect(badge, 8, 8)
             p.setFont(QFont('Consolas', 9))
             p.setPen(QColor('#A9E9F0'))
-            p.drawText(badge, Qt.AlignmentFlag.AlignCenter, 'v1.0.0')
+            p.drawText(badge, Qt.AlignmentFlag.AlignCenter, f'v{APP_VERSION}')
 
             # Estado y porcentaje, suficientemente separados del borde inferior.
             message = self.steps[0][1]
@@ -3741,7 +3741,15 @@ class App(tk.Tk):
                 close_gallery()
             # Un clic sobre la captura no la cierra.
 
+        def gallery_mousewheel(event):
+            # La rueda navega entre capturas sin desplazar el gestor del fondo.
+            if event.delta:
+                move(-1 if event.delta > 0 else 1)
+            return 'break'
+
         canvas.bind('<Button-1>', clicked)
+        canvas.bind('<MouseWheel>', gallery_mousewheel)
+        overlay.bind('<MouseWheel>', gallery_mousewheel)
         overlay.bind('<Escape>', close_gallery)
         overlay.bind('<Left>', lambda _e: move(-1))
         overlay.bind('<Right>', lambda _e: move(1))
@@ -4572,7 +4580,7 @@ class App(tk.Tk):
 
     def action_label(self, entry, complement=False):
         if entry['type'] == 'pagina':
-            return 'Abrir página'
+            return 'Abrir página de descarga'
         if entry['type'] == 'txt':
             return 'Ver enlaces de descarga'
         return 'Descargar complemento' if complement else 'Descargar juego'
