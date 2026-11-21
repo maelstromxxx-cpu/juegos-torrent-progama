@@ -2021,9 +2021,24 @@ class BotonDescargaModerno(tk.Canvas):
         fill = '#303c46' if disabled else '#246a4c' if self.hover else '#20583f'
         edge = '#46545e' if disabled else '#60d79a' if self.hover else '#398c65'
         SelectorElegante._rounded(self, self, 2, 2, w-2, h-2, 12, fill, edge)
-        self.create_text(w/2, h/2, text='↓   ' + self.caption.upper(),
-                         fill='#96a3ae' if disabled else '#e9fff2',
-                         font=('Segoe UI', 11, 'bold'))
+        # Ícono de descarga: flecha entrando en una bandeja (trazado vectorial).
+        # Centrar el conjunto ícono + texto, no solamente el texto.
+        color = '#96a3ae' if disabled else '#e9fff2'
+        font = tkfont.Font(family='Segoe UI', size=11, weight='bold')
+        label = self.caption.upper()
+        icon_width, gap = 20, 10
+        total_width = icon_width + gap + font.measure(label)
+        x = (w - total_width) / 2
+        cy = h / 2
+        self.create_line(x + 10, cy - 10, x + 10, cy + 3,
+                         fill=color, width=2.3, capstyle='round')
+        self.create_line(x + 5, cy - 2, x + 10, cy + 3, x + 15, cy - 2,
+                         fill=color, width=2.3, capstyle='round', joinstyle='round')
+        self.create_line(x + 2, cy + 3, x + 2, cy + 9, x + 18, cy + 9,
+                         x + 18, cy + 3, fill=color, width=2.3,
+                         capstyle='round', joinstyle='round')
+        self.create_text(x + icon_width + gap, cy, text=label, anchor='w',
+                         fill=color, font=font)
 
 
 class App(tk.Tk):
@@ -4580,7 +4595,7 @@ class App(tk.Tk):
 
     def action_label(self, entry, complement=False):
         if entry['type'] == 'pagina':
-            return 'Abrir página'
+            return 'Abrir página de descarga'
         if entry['type'] == 'txt':
             return 'Ver enlaces de descarga'
         return 'Descargar complemento' if complement else 'Descargar juego'
