@@ -2156,6 +2156,8 @@ class App(tk.Tk):
                              insertbackground=FG, relief='flat', bd=0,
                              highlightthickness=0)
         searchbox.place(x=34, rely=0.5, anchor='w', relwidth=1, width=-73, height=21)
+        # Escape limpia la búsqueda igual que el botón X.
+        searchbox.bind('<Escape>', lambda _event: (self.search.set(''), 'break')[1])
         clear_search = tk.Label(search_area, text='✕', fg=MUTED, bg=PANEL,
                                 font=('Segoe UI', 10, 'bold'), cursor='hand2')
         clear_search.place(relx=1, x=-17, rely=0.5, anchor='center')
