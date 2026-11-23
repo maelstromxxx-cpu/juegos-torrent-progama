@@ -26,7 +26,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.17'
+APP_VERSION = '2.8.27'
 
 
 def _run_qt_splash_child():
@@ -2054,6 +2054,7 @@ class App(tk.Tk):
         # Biblioteca oculta hasta terminar el splash.
         self.minsize(760, 500)
         self.configure(bg=BG)
+        self._instalar_barra_personalizada()
         self.promo_pending = None
         self.promo_window = None
         self.promo_seen = self._load_seen_promos()
@@ -2113,13 +2114,13 @@ class App(tk.Tk):
         self.search.trace_add('write', lambda *_: self.schedule_search_render())
 
         top = tk.Frame(self, bg=BG)
-        top.pack(fill='x', padx=22, pady=(18, 12))
+        top.pack(fill='x', padx=18, pady=(7, 5))
         # Elige uno de los dos logos UNA sola vez al iniciar el programa.
         # Los archivos se mantienen externos para no modificar el código al cambiarlos.
         self.header_logo = None
         logo_path = random.choice(LOGOS)
         if logo_path.is_file() and Image is not None:
-            self.header_logo = load_local_image(logo_path, 420, 140, master=self)
+            self.header_logo = load_local_image(logo_path, 340, 94, master=self)
         if self.header_logo is not None:
             tk.Label(top, image=self.header_logo, bg=BG, bd=0).pack(side='left')
         else:
@@ -2442,8 +2443,8 @@ class App(tk.Tk):
         self.report_button = tk.Button(
             self.tabs.nav, text='' if self.report_icon_photo else '🚩',
             image=self.report_icon_photo, command=self.open_report_dialog,
-            state='disabled', bg=CARD, fg='#ff5252',
-            activebackground='#34445a', activeforeground='#ff5252',
+            state='disabled', bg=PANEL, fg='#ff5252',
+            activebackground=PANEL, activeforeground='#ff5252',
             relief='flat', bd=0, cursor='hand2',
             font=('Segoe UI Emoji', 14), padx=5, pady=4)
         self.report_button.pack(side='right', anchor='center', padx=(4, 8), pady=3)
@@ -2857,14 +2858,89 @@ class App(tk.Tk):
             elif self.splash is not None and self.splash.winfo_exists():
                 self.splash.destroy()
             self.deiconify()
-            try:
-                self.state('zoomed')
-            except tk.TclError:
-                pass
+            self._kalaka_alternar_maximizar()
             self.after_idle(self._schedule_startup_split)
             self.promo_startup_finished = True
             self.after(350, self._maybe_show_promotion)
             self.after(2500, self.check_program_updates)
+
+    # PRUEBA v2.8.27: barra de título propia, reversible sin modificar el gestor base.
+    def _instalar_barra_personalizada(self):
+        self._kalaka_maximizada = False
+        self._kalaka_geometria_restaurada = '1280x800'
+        self._kalaka_arrastre = None
+        self.overrideredirect(True)
+        barra = tk.Frame(self, bg='#152337', height=36, cursor='fleur')
+        barra.pack(side='top', fill='x')
+        barra.pack_propagate(False)
+        titulo = tk.Label(barra, text="  🎮  Kalaka's Soft  |  Juegos Torrent", bg='#152337',
+                          fg='#f3f7fd', font=('Segoe UI', 10, 'bold'), anchor='w', cursor='fleur')
+        titulo.pack(side='left', fill='y', padx=8)
+        for widget in (barra, titulo):
+            widget.bind('<ButtonPress-1>', self._kalaka_iniciar_arrastre)
+            widget.bind('<B1-Motion>', self._kalaka_arrastrar)
+            widget.bind('<Double-Button-1>', lambda e: self._kalaka_alternar_maximizar())
+        for texto, accion, hover in (
+            ('×', self.destroy, '#b72d3a'),
+            ('□', self._kalaka_alternar_maximizar, '#304b63'),
+            ('—', self._kalaka_minimizar, '#304b63'),
+        ):
+            boton = tk.Label(barra, text=texto, bg='#152337', fg='#e5edf7',
+                             font=('Segoe UI', 13), width=5, cursor='hand2')
+            boton.pack(side='right', fill='y')
+            boton.bind('<Button-1>', lambda e, fn=accion: fn())
+            boton.bind('<Enter>', lambda e, b=boton, c=hover: b.configure(bg=c))
+            boton.bind('<Leave>', lambda e, b=boton: b.configure(bg='#152337'))
+            if texto == '□':
+                self._kalaka_boton_maximizar = boton
+        # Windows puede desactivar el override al minimizar; recuperarlo al restaurar.
+        self.bind('<Map>', self._kalaka_al_mapear, add='+')
+
+    def _kalaka_area_trabajo(self):
+        if os.name == 'nt':
+            try:
+                import ctypes
+                from ctypes import wintypes
+                rect = wintypes.RECT()
+                if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rect), 0):
+                    return rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top
+            except Exception:
+                pass
+        return 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+
+    def _kalaka_alternar_maximizar(self):
+        if self._kalaka_maximizada:
+            self.geometry(self._kalaka_geometria_restaurada)
+            self._kalaka_maximizada = False
+            self._kalaka_boton_maximizar.configure(text='□')
+        else:
+            self._kalaka_geometria_restaurada = self.geometry()
+            x, y, w, h = self._kalaka_area_trabajo()
+            self.geometry(f'{w}x{h}+{x}+{y}')
+            self._kalaka_maximizada = True
+            self._kalaka_boton_maximizar.configure(text='❐')
+
+    def _kalaka_iniciar_arrastre(self, event):
+        if not self._kalaka_maximizada:
+            self._kalaka_arrastre = (event.x_root-self.winfo_x(), event.y_root-self.winfo_y())
+
+    def _kalaka_arrastrar(self, event):
+        if self._kalaka_arrastre and not self._kalaka_maximizada:
+            dx, dy = self._kalaka_arrastre
+            self.geometry(f'+{event.x_root-dx}+{event.y_root-dy}')
+
+    def _kalaka_minimizar(self):
+        # Tkinter no permite iconify() directamente con overrideredirect(True).
+        self.overrideredirect(False)
+        self.iconify()
+
+    def _kalaka_al_mapear(self, event):
+        if event.widget is self and not self.overrideredirect():
+            self.after_idle(self._kalaka_recuperar_borde)
+
+    def _kalaka_recuperar_borde(self):
+        if self.winfo_exists() and self.state() == 'normal':
+            self.overrideredirect(True)
 
     def _on_window_mapped(self, event):
         """El HWND de Windows ya existe al recibir Map."""
@@ -3746,11 +3822,13 @@ class App(tk.Tk):
                 margin = 2 * scale
                 brush.ellipse((margin, margin, large-margin-1, large-margin-1),
                               fill='#263541', outline='#55707d', width=scale)
+                # Chevron fino, sin relleno y centrado ópticamente.
+                # El círculo conserva el antialias de Pillow.
                 cx0 = cy0 = large // 2
-                pts = [(cx0-6*direction*scale, cy0-10*scale),
-                       (cx0+8*direction*scale, cy0),
-                       (cx0-6*direction*scale, cy0+10*scale)]
-                brush.polygon(pts, fill='#62e6ae')
+                pts = [(cx0-5*direction*scale, cy0-9*scale),
+                       (cx0+4*direction*scale, cy0),
+                       (cx0-5*direction*scale, cy0+9*scale)]
+                brush.line(pts, fill='#62e6ae', width=2*scale, joint='curve')
                 return ImageTk.PhotoImage(icon.resize((diameter, diameter), Image.Resampling.LANCZOS),
                                           master=overlay)
 
@@ -3979,6 +4057,52 @@ class App(tk.Tk):
             else (getter(self.game_metadata.get(g['name'], {})) or 0),
             g['name'].casefold()))
 
+    def _cabecera_dialogo(self, ventana, titulo):
+        """Cabecera oscura arrastrable para diálogos modales del gestor."""
+        ventana.overrideredirect(True)
+        fondo = '#152337'
+        barra = tk.Frame(ventana, bg=fondo, height=38, cursor='fleur')
+        barra.pack(side='top', fill='x')
+        barra.pack_propagate(False)
+        nombre = tk.Label(barra, text='  ◈  ' + titulo, bg=fondo, fg=FG,
+                          font=('Segoe UI', 10, 'bold'), anchor='w', cursor='fleur')
+        nombre.pack(side='left', fill='y', padx=(8, 0))
+        cerrar = tk.Label(barra, text='  ×  ', bg=fondo, fg='#e5edf7',
+                          font=('Segoe UI', 16), cursor='hand2')
+        cerrar.pack(side='right', fill='y')
+        cerrar.bind('<Button-1>', lambda _e: ventana.destroy())
+        cerrar.bind('<Enter>', lambda _e: cerrar.configure(bg='#963f48'))
+        cerrar.bind('<Leave>', lambda _e: cerrar.configure(bg=fondo))
+        arrastre = {'x': 0, 'y': 0}
+        def iniciar(event):
+            arrastre['x'] = event.x_root - ventana.winfo_x()
+            arrastre['y'] = event.y_root - ventana.winfo_y()
+        def mover(event):
+            ventana.geometry(f"+{event.x_root-arrastre['x']}+{event.y_root-arrastre['y']}")
+        for widget in (barra, nombre):
+            widget.bind('<ButtonPress-1>', iniciar)
+            widget.bind('<B1-Motion>', mover)
+        return barra
+
+    def _activar_modal_sin_bordes(self, ventana, intentos=0):
+        """Tomar foco SOLO cuando el Toplevel sin bordes ya es visible.
+
+        Evita capturar el ratón sobre la ventana principal antes de que el
+        diálogo pueda recibir eventos en Windows.
+        """
+        try:
+            if not ventana.winfo_exists():
+                return
+            if not ventana.winfo_viewable():
+                if intentos < 20:
+                    ventana.after(50, lambda: self._activar_modal_sin_bordes(ventana, intentos + 1))
+                return
+            ventana.lift()
+            ventana.focus_force()
+            ventana.grab_set()
+        except tk.TclError:
+            pass
+
     def open_export_collection(self):
         """Exporta un inventario, sin alterar catálogo ni colección personal."""
         if not self.games:
@@ -3986,10 +4110,12 @@ class App(tk.Tk):
             return
         win = tk.Toplevel(self)
         win.title('Exportar colección')
+        self._cabecera_dialogo(win, 'Exportar colección')
         win.configure(bg=BG)
         win.resizable(False, False)
-        win.transient(self)
-        win.grab_set()
+        # Los diálogos overrideredirect no deben adquirir un grab antes de mapearse.
+        # Tampoco usar transient aquí: con raíz sin bordes puede ocultar el diálogo.
+
         content = tk.Frame(win, bg=BG, padx=22, pady=18)
         content.pack(fill='both', expand=True)
         tk.Label(content, text='Exportar colección', bg=BG, fg=FG,
@@ -4112,7 +4238,10 @@ class App(tk.Tk):
         win.geometry(f'+{self.winfo_rootx() + max(0, (self.winfo_width()-win.winfo_width())//2)}'
                      f'+{self.winfo_rooty() + max(0, (self.winfo_height()-win.winfo_height())//2)}')
 
+        win.after_idle(lambda: self._activar_modal_sin_bordes(win))
+
     @staticmethod
+
     def load_owned_games():
         try:
             data = json.loads(OWNED_FILE.read_text(encoding='utf-8'))
@@ -4512,11 +4641,13 @@ class App(tk.Tk):
         game_name = self.selected['name']
         popup = tk.Toplevel(self)
         popup.title('Juegos Torrent | Reportar problema')
+        self._cabecera_dialogo(popup, 'Reportar un problema')
         popup.configure(bg=BG)
-        centered_popup(popup, 620, 650)
+        centered_popup(popup, 620, 688)
         popup.minsize(480, 480)
-        popup.transient(self)
-        popup.grab_set()
+        # Los diálogos overrideredirect no deben adquirir un grab antes de mapearse.
+        # Tampoco usar transient aquí: con raíz sin bordes puede ocultar el diálogo.
+
         popup.bind('<Escape>', lambda _event: popup.destroy())
 
         body = tk.Frame(popup, bg=BG, padx=22, pady=18)
@@ -4600,6 +4731,8 @@ class App(tk.Tk):
             threading.Thread(target=work, daemon=True).start()
         submit.config(command=send)
         combo.focus_set()
+
+        popup.after_idle(lambda: self._activar_modal_sin_bordes(popup))
 
     def download_selected(self):
         if self.selected:
@@ -4731,9 +4864,10 @@ class App(tk.Tk):
         window = tk.Toplevel(self)
         window.title('Juegos Torrent | Centro de ayuda')
         window.configure(bg=BG)
+        self._cabecera_dialogo(window, 'Centro de ayuda')
         centered_popup(window, 1040, 1100)
         window.minsize(700, 430)
-        window.transient(parent if parent is not None and parent.winfo_exists() else self)
+        # Ventana sin bordes: evitar transient para prevenir bloqueo de foco en Windows.
         window.bind('<Escape>', lambda _: window.destroy())
 
         header = tk.Frame(window, bg=PANEL, padx=20, pady=15)
@@ -4867,6 +5001,7 @@ class App(tk.Tk):
             refresh()
         else:
             set_description('Todavía no hay tutoriales. Agregá guías en tutoriales/guias.json.')
+        window.after(50, lambda: window.lift() if window.winfo_exists() else None)
         window.focus_set()
 
     def open_text_viewer(self):
@@ -5182,6 +5317,34 @@ class App(tk.Tk):
             self.status.config(text='Cliente BitTorrent detectado. Ya podés descargar juegos.')
         return True
 
+    def _cabecera_qbittorrent(self, ventana, titulo):
+        """Cabecera propia para diálogos qBittorrent, sin alterar sus acciones."""
+        ventana.overrideredirect(True)
+        cabecera = tk.Frame(ventana, bg='#172a37', height=38, cursor='fleur')
+        cabecera.pack(fill='x', side='top')
+        cabecera.pack_propagate(False)
+        nombre = tk.Label(cabecera, text='  ◈  ' + titulo, bg='#172a37', fg=FG,
+                          font=('Segoe UI', 10, 'bold'), cursor='fleur')
+        nombre.pack(side='left', fill='y')
+        cerrar = tk.Label(cabecera, text='  ×  ', bg='#172a37', fg='#e5eaf0',
+                          font=('Segoe UI', 16), cursor='hand2')
+        cerrar.pack(side='right', fill='y')
+        cerrar.bind('<Button-1>', lambda event: ventana.destroy())
+        cerrar.bind('<Enter>', lambda event: cerrar.config(bg='#963f48'))
+        cerrar.bind('<Leave>', lambda event: cerrar.config(bg='#172a37'))
+        arrastre = {'x': 0, 'y': 0}
+        def iniciar(event):
+            arrastre['x'] = event.x_root - ventana.winfo_x()
+            arrastre['y'] = event.y_root - ventana.winfo_y()
+        def mover(event):
+            ventana.geometry('+%d+%d' % (event.x_root - arrastre['x'],
+                                          event.y_root - arrastre['y']))
+        for widget in (cabecera, nombre):
+            widget.bind('<ButtonPress-1>', iniciar)
+            widget.bind('<B1-Motion>', mover)
+        ventana.bind('<Escape>', lambda event: ventana.destroy(), add='+')
+        return cabecera
+
     def centrar_ventana_qbittorrent(self, ventana):
         """Centra horizontalmente; centro vertical al 40 % de la pantalla."""
         ventana.update_idletasks()
@@ -5197,6 +5360,7 @@ class App(tk.Tk):
         """Mantiene la app abierta mientras el usuario instala; no presume éxito."""
         dlg = tk.Toplevel(self)
         dlg.title('Esperando instalación de qBittorrent')
+        self._cabecera_qbittorrent(dlg, 'Esperando instalación de qBittorrent')
         dlg.configure(bg=PANEL)
         dlg.resizable(False, False)
         dlg.transient(self)
@@ -5264,6 +5428,7 @@ class App(tk.Tk):
             return
         dlg = tk.Toplevel(self)
         dlg.title('Descargando qBittorrent')
+        self._cabecera_qbittorrent(dlg, 'Descargando qBittorrent')
         dlg.configure(bg=PANEL)
         dlg.resizable(False, False)
         dlg.transient(self)
@@ -5370,6 +5535,7 @@ class App(tk.Tk):
         dialog = tk.Toplevel(self)
         self._aviso_torrent = dialog
         dialog.title('Cliente BitTorrent no detectado')
+        self._cabecera_qbittorrent(dialog, 'Cliente BitTorrent no detectado')
         dialog.configure(bg=PANEL)
         dialog.resizable(False, False)
         dialog.transient(self)

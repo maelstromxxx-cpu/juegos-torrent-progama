@@ -131,6 +131,7 @@ class VentanaActualizacion(tk.Toplevel):
         self.title("Kalaka's Soft | Actualizador")
         self.configure(bg=FONDO)
         self.resizable(False,False)
+        self.overrideredirect(True)
         self.transient(parent)
         self.protocol('WM_DELETE_WINDOW', self._cerrar)
         self._armar()
@@ -165,6 +166,19 @@ class VentanaActualizacion(tk.Toplevel):
         # Una altura fija de 116 px cortaba el subtítulo en algunos equipos.
         header=tk.Frame(self,bg=CABECERA)
         header.pack(fill='x')
+        cerrar=tk.Label(header,text='×',bg=CABECERA,fg=BLANCO,
+                        font=('Segoe UI',16),width=3,cursor='hand2')
+        cerrar.pack(side='right',anchor='n',padx=(0,7),pady=5)
+        cerrar.bind('<Button-1>',lambda e:self._cerrar())
+        cerrar.bind('<Enter>',lambda e:cerrar.config(bg='#a12b38'))
+        cerrar.bind('<Leave>',lambda e:cerrar.config(bg=CABECERA))
+        def inicio(e): self._arrastre=(e.x_root-self.winfo_x(),e.y_root-self.winfo_y())
+        def mover(e):
+            if getattr(self,'_arrastre',None):
+                dx,dy=self._arrastre
+                self.geometry(f'+{e.x_root-dx}+{e.y_root-dy}')
+        header.bind('<ButtonPress-1>',inicio)
+        header.bind('<B1-Motion>',mover)
         insignia=tk.Canvas(header,width=57,height=57,bg=CABECERA,highlightthickness=0)
         insignia.pack(side='left',padx=(27,17),pady=(26,26))
         _redondeado(insignia,2,2,54,54,15,fill='#24415b',outline='#426587',width=1)
@@ -180,6 +194,9 @@ class VentanaActualizacion(tk.Toplevel):
         self.subtitulo=tk.Label(titulos,text='Una nueva versión está lista para instalar',
                                 bg=CABECERA,fg=GRIS,font=('Segoe UI',10))
         self.subtitulo.pack(anchor='w',pady=(4,0))
+        for widget in (titulos,self.titulo,self.subtitulo):
+            widget.bind('<ButtonPress-1>',inicio)
+            widget.bind('<B1-Motion>',mover)
 
         contenido=tk.Frame(self,bg=FONDO)
         contenido.pack(fill='both',expand=True,padx=25,pady=(21,0))
