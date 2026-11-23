@@ -1,0 +1,17 @@
+PRUEBA DE INTEGRACIÓN: Splash gamer Tkinter + Pillow + bordes nativos Windows.
+
+BASE: Juegos_Torrent_v2_8_27_Guias_Cabecera_Compacta_PRUEBA.py
+SPLASH: última prueba con SetWindowRgn (la que mejoró las esquinas).
+No se modificó el gestor original.
+
+PARA PROBAR:
+1) Extraé este ZIP en una COPIA de tu kit de compilación.
+2) Conservá los otros archivos originales del kit (actualizador.py, recursos, etc.).
+3) Dejá UN SOLO Juegos_Torrent*.py en la raíz del kit.
+4) Ejecutá el nuevo .py para comprobar el arranque, catálogo y cierre del splash.
+5) Compilá desde la copia del kit, usando preparar_distribucion.py incluido.
+6) Compará el tamaño de JuegosTorrent.exe con tu compilación anterior.
+
+La compilación de Windows no se puede realizar desde este entorno Linux.
+Se verificó la sintaxis Python del gestor y del script de distribución.
+Esta versión no debe publicarse como actualización antes de probarla.

@@ -98,7 +98,7 @@ def build(source,version):
     version_file=write_version_info(version)
     dist=ROOT/'dist'/('v'+version)
     command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onefile','--windowed',
-             '--name','JuegosTorrent','--hidden-import','truststore._windows','--icon',str(ROOT/'ICONOS'/'JuegosTorrent.ico'),'--add-data',str(ROOT/'ICONOS'/'JuegosTorrent.ico')+os.pathsep+'ICONOS','--version-file',str(version_file),'--paths',str(ROOT),
+             '--name','JuegosTorrent','--exclude-module','PyQt6','--exclude-module','PyQt5','--exclude-module','PySide6','--hidden-import','truststore._windows','--icon',str(ROOT/'ICONOS'/'JuegosTorrent.ico'),'--version-file',str(version_file),'--paths',str(ROOT),
              '--distpath',str(dist),'--workpath',str(ROOT/'build'), '--specpath',str(ROOT),str(source)]
     subprocess.run(command,cwd=ROOT,check=True)
     output.mkdir(parents=True)
