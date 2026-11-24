@@ -26,7 +26,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.27'
+APP_VERSION = '2.8.28'
 
 
 from functools import lru_cache
@@ -2688,6 +2688,28 @@ class App(tk.Tk):
                 from ctypes import wintypes
                 rect = wintypes.RECT()
                 if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rect), 0):
+                    # Reservar una franja mínima si la barra está autooculta,
+                    # para que el Shell no trate la ventana como pantalla completa.
+                    class APPBARDATA(ctypes.Structure):
+                        _fields_ = [('cbSize', wintypes.DWORD), ('hWnd', wintypes.HWND),
+                                    ('uCallbackMessage', wintypes.UINT), ('uEdge', wintypes.UINT),
+                                    ('rc', wintypes.RECT), ('lParam', wintypes.LPARAM)]
+                    try:
+                        appbar = ctypes.windll.shell32.SHAppBarMessage
+                        appbar.argtypes = [wintypes.DWORD, ctypes.POINTER(APPBARDATA)]
+                        appbar.restype = ctypes.c_size_t
+                        data = APPBARDATA()
+                        data.cbSize = ctypes.sizeof(data)
+                        if appbar(4, ctypes.byref(data)) & 1:  # ABM_GETSTATE / ABS_AUTOHIDE
+                            if appbar(5, ctypes.byref(data)):  # ABM_GETTASKBARPOS
+                                if data.uEdge == 0: rect.left += 2
+                                elif data.uEdge == 1: rect.top += 2
+                                elif data.uEdge == 2: rect.right -= 2
+                                elif data.uEdge == 3: rect.bottom -= 2
+                            else:
+                                rect.bottom -= 2
+                    except Exception:
+                        pass
                     return rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top
             except Exception:
                 pass
@@ -2720,12 +2742,52 @@ class App(tk.Tk):
         self.iconify()
 
     def _kalaka_al_mapear(self, event):
-        if event.widget is self and not self.overrideredirect():
+        if event.widget is self:
             self.after_idle(self._kalaka_recuperar_borde)
 
     def _kalaka_recuperar_borde(self):
         if self.winfo_exists() and self.state() == 'normal':
-            self.overrideredirect(True)
+            if not self.overrideredirect():
+                self.overrideredirect(True)
+            self._kalaka_mostrar_en_barra_tareas()
+
+    def _kalaka_mostrar_en_barra_tareas(self):
+        """Registrar la ventana principal sin bordes como aplicación de Windows."""
+        if os.name != 'nt':
+            return
+        try:
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            user32.GetParent.argtypes = [wintypes.HWND]
+            user32.GetParent.restype = wintypes.HWND
+            get_style = user32.GetWindowLongW
+            get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+            get_style.restype = ctypes.c_long
+            set_style = user32.SetWindowLongW
+            set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+            set_style.restype = ctypes.c_long
+            user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.ShowWindow.restype = wintypes.BOOL
+            user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            user32.SetWindowPos.restype = wintypes.BOOL
+            hwnd = user32.GetParent(self.winfo_id()) or self.winfo_id()
+            style = get_style(hwnd, -20)  # GWL_EXSTYLE
+            nuevo = (style & ~0x80) | 0x40000  # quitar TOOLWINDOW, agregar APPWINDOW
+            if nuevo == style:
+                return
+            # El Shell necesita que la ventana se oculte y vuelva a mostrarse.
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE
+            try:
+                ctypes.set_last_error(0)
+                anterior = set_style(hwnd, -20, nuevo)
+                if not anterior and ctypes.get_last_error():
+                    raise ctypes.WinError(ctypes.get_last_error())
+                user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x37)
+            finally:
+                user32.ShowWindow(hwnd, 5)  # SW_SHOW
+        except Exception:
+            logging.exception('No se pudo registrar la ventana en la barra de tareas')
 
     def _on_window_mapped(self, event):
         """El HWND de Windows ya existe al recibir Map."""
@@ -5035,46 +5097,32 @@ class App(tk.Tk):
 
     @staticmethod
     def datos_instalador_qbittorrent():
-        """Obtiene versión estable y SHA-256 desde la página OFICIAL de Windows.
-
-        Nunca inventa un hash ni utiliza uno de otra plataforma.
-        """
-        from html.parser import HTMLParser
-        class TextoHTML(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.partes = []
-            def handle_data(self, data):
-                self.partes.append(data)
-        req = Request('https://www.qbittorrent.org/download',
-                      headers={'User-Agent': 'JuegosTorrent/2.8.5'})
+        """Consulta la última release estable y el digest del asset x64 oficial."""
+        base = 'https://github.com/qbittorrent/qBittorrent/releases/download/'
+        req = Request('https://api.github.com/repos/qbittorrent/qBittorrent/releases/latest',
+                      headers={'User-Agent': f'JuegosTorrent/{APP_VERSION}',
+                               'Accept': 'application/vnd.github+json'})
         with urlopen(req, timeout=20) as response:
-            html = response.read(2_000_001)
-        if len(html) > 2_000_000:
-            raise ValueError('La página oficial excedió el tamaño esperado.')
-        parser = TextoHTML()
-        parser.feed(html.decode('utf-8', errors='replace'))
-        texto = ' '.join(' '.join(parser.partes).split())
-        win = re.search(r'Windows 10\+(.+?)(?:macOS|Linux)', texto, re.I | re.S)
-        if not win:
-            raise ValueError('No se encontró la sección de Windows en el sitio oficial.')
-        contenido = win.group(1)
-        m = re.search(r'Download qBittorrent v(\d+\.\d+\.\d+)\b', contenido)
-        if not m:
-            raise ValueError('No se pudo determinar la versión estable oficial.')
-        version = m.group(1)
-        hashes = contenido.split('Checksums and library versions', 1)
-        if len(hashes) < 2:
-            raise ValueError('No se encontraron los hashes oficiales.')
-        match = re.search(r'(?<![\d.])' + re.escape(version) +
-                          r'\s+([a-fA-F0-9]{64})\b', hashes[1])
-        if not match:
-            raise ValueError('No se encontró el SHA-256 de Windows para la versión ' + version)
-        sha = match.group(1).lower()
+            raw = response.read(2_000_001)
+        if len(raw) > 2_000_000:
+            raise ValueError('La respuesta de GitHub excedió el tamaño esperado.')
+        release = json.loads(raw)
+        match = re.fullmatch(r'release-(\d+\.\d+\.\d+)', release.get('tag_name', ''))
+        if not match or release.get('draft') is not False or release.get('prerelease') is not False:
+            raise ValueError('GitHub no devolvió una versión estable reconocida.')
+        version = match.group(1)
         nombre = f'qbittorrent_{version}_x64_setup.exe'
-        url = ('https://downloads.sourceforge.net/project/qbittorrent/'
-               f'qbittorrent-win32/qbittorrent-{version}/{nombre}')
-        return version, nombre, url, sha
+        assets = [a for a in release.get('assets', []) if a.get('name') == nombre]
+        if len(assets) != 1:
+            raise ValueError('No se encontró un instalador x64 oficial inequívoco.')
+        asset = assets[0]
+        url = base + release['tag_name'] + '/' + nombre
+        if asset.get('browser_download_url') != url or asset.get('state') != 'uploaded':
+            raise ValueError('El enlace del instalador oficial no es válido.')
+        digest = re.fullmatch(r'sha256:([a-fA-F0-9]{64})', asset.get('digest') or '')
+        if not digest:
+            raise ValueError('GitHub no publicó un SHA-256 válido para este instalador.')
+        return version, nombre, url, digest.group(1).lower()
 
     def reanudar_torrent_pendiente(self):
         """Comprueba el cliente y reanuda solamente el torrent seleccionado previamente."""
@@ -5138,8 +5186,6 @@ class App(tk.Tk):
         self._cabecera_qbittorrent(dlg, 'Esperando instalación de qBittorrent')
         dlg.configure(bg=PANEL)
         dlg.resizable(False, False)
-        dlg.transient(self)
-        dlg.grab_set()
         body = tk.Frame(dlg, bg=PANEL, padx=24, pady=22)
         body.pack()
         tk.Label(body, text='Esperando la instalación de qBittorrent', bg=PANEL,
@@ -5160,11 +5206,11 @@ class App(tk.Tk):
         dlg.protocol('WM_DELETE_WINDOW', dlg.destroy)
         dlg.update_idletasks()
         self.centrar_ventana_qbittorrent(dlg)
+        dlg.after_idle(lambda: self._activar_modal_sin_bordes(dlg))
 
     def respaldo_qbittorrent_navegador(self):
         """GitHub en navegador y página oficial como última alternativa."""
-        url = ('https://github.com/qbittorrent/qBittorrent/releases/download/'
-               'release-5.3.0/qbittorrent_5.3.0_x64_setup.exe')
+        url = 'https://github.com/qbittorrent/qBittorrent/releases/latest'
         oficial = 'https://www.qbittorrent.org/download'
         try:
             abierto = webbrowser.open(url, new=2)
@@ -5172,8 +5218,8 @@ class App(tk.Tk):
             abierto = False
         if abierto:
             respuesta = messagebox.askyesnocancel('Descarga desde navegador',
-                'Se abrió la descarga en tu navegador.\n\n'
-                '¿Pudiste descargar el instalador?\n\n'
+                'Se abrió la última versión oficial en tu navegador.\n\n'
+                '¿Pudiste descargar el instalador x64 desde Assets?\n\n'
                 'Sí: continuar con la instalación.\n'
                 'No: abrir la página oficial.\n'
                 'Cancelar: dejarlo para después.', parent=self)
@@ -5206,8 +5252,6 @@ class App(tk.Tk):
         self._cabecera_qbittorrent(dlg, 'Descargando qBittorrent')
         dlg.configure(bg=PANEL)
         dlg.resizable(False, False)
-        dlg.transient(self)
-        dlg.grab_set()
         estado = tk.Label(dlg, text='Consultando versión oficial…',
                           bg=PANEL, fg=FG, padx=24, pady=18)
         estado.pack()
@@ -5217,6 +5261,7 @@ class App(tk.Tk):
         porcentaje.pack(pady=(0, 16))
         dlg.update_idletasks()
         self.centrar_ventana_qbittorrent(dlg)
+        dlg.after_idle(lambda: self._activar_modal_sin_bordes(dlg))
         def avance(p, mensaje):
             def actualizar():
                 if dlg.winfo_exists():
@@ -5227,11 +5272,8 @@ class App(tk.Tk):
         def trabajo():
             archivo = None
             try:
-                version = '5.3.0'
-                nombre = 'qbittorrent_5.3.0_x64_setup.exe'
-                url = ('https://github.com/qbittorrent/qBittorrent/releases/download/'
-                       'release-5.3.0/qbittorrent_5.3.0_x64_setup.exe')
-                esperado = 'aff5b3bdc00d6e5773d6099ba30f9696dd3dfd1669ab0f64ce5c4e7168486436'
+                version, nombre, url, esperado = self.datos_instalador_qbittorrent()
+                avance(0, f'Descargando qBittorrent {version}…')
                 import tempfile as _tempfile
                 carpeta = Path(_tempfile.mkdtemp(prefix='kalaka_qbittorrent_'))
                 archivo = carpeta / nombre
@@ -5278,11 +5320,11 @@ class App(tk.Tk):
                     if messagebox.askyesno('No se pudo descargar',
                                            'No se completó la descarga segura del instalador.\n\n'
                                            + error[:220] + '\n\n'
-                                           '¿Probar la descarga desde el navegador?', parent=self):
+                                           '¿Abrir GitHub en el navegador para descargar manualmente?\nLa descarga manual no será verificada por el gestor.', parent=self):
                         self.respaldo_qbittorrent_navegador()
                     return
                 if messagebox.askyesno('qBittorrent descargado',
-                                       'El instalador oficial fue descargado y su SHA-256 '
+                                       f'El instalador oficial de qBittorrent {version} fue descargado y su SHA-256 '
                                        'se verificó correctamente.\n\n'
                                        '¿Querés ejecutarlo ahora?', parent=self):
                     try:
@@ -5313,8 +5355,6 @@ class App(tk.Tk):
         self._cabecera_qbittorrent(dialog, 'Cliente BitTorrent no detectado')
         dialog.configure(bg=PANEL)
         dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
         dialog.protocol('WM_DELETE_WINDOW', dialog.destroy)
         body = tk.Frame(dialog, bg=PANEL, padx=24, pady=20)
         body.pack(fill='both', expand=True)
@@ -5355,6 +5395,7 @@ class App(tk.Tk):
         y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 2)
         dialog.geometry(f'{width}x{height}+{x}+{y}')
         dialog.bind('<Escape>', lambda _: dialog.destroy())
+        dialog.after_idle(lambda: self._activar_modal_sin_bordes(dialog))
         self.status.config(text='Se necesita configurar un cliente BitTorrent.')
 
     def run_entry(self, entry):
