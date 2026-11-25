@@ -26,7 +26,7 @@ except ImportError:
     Image = ImageTk = None  # PNG funciona sin Pillow; JPG requiere Pillow.
 from urllib.request import Request, urlopen
 
-APP_VERSION = '2.8.28'
+APP_VERSION = '2.8.29'
 
 
 from functools import lru_cache
@@ -2295,8 +2295,8 @@ class App(tk.Tk):
                 ('anio', 'anio.png', 'Año'),
                 ('genero', 'genero.png', 'Género'),
                 ('tamano', 'tamano.png', 'Tamaño'),
-                ('modo', 'modo.png', 'Modo'),
-                ('idioma', 'idioma.png', 'Idioma')):
+                ('idioma', 'idioma.png', 'Idioma'),
+                ('modo', 'modo.png', 'Modo')):
             slot = tk.Frame(self.info_bar, bg=CARD)
             slot.pack(side='left', padx=(0, 12))
             path = INFO_ICONS / icon
@@ -2308,6 +2308,7 @@ class App(tk.Tk):
                      compound='left', fg=MUTED, bg=CARD,
                      font=('Segoe UI', 9)).pack(side='left', padx=(0, 5))
             label = tk.Label(slot, text='', fg=FG, bg=CARD,
+                             anchor='w', justify='left',
                              font=('Segoe UI', 9, 'bold'))
             label.pack(side='left')
             self.info_values[key] = (slot, label)
@@ -3532,8 +3533,9 @@ class App(tk.Tk):
         messagebox.showerror('JUEGOS - Error de conexión', msg)
 
     def load_cover(self, name, max_width, max_height):
-        return load_scored_cover(find_cover(name), None, max_width, max_height, master=self,
-                                 hypervisor=is_hypervisor(find_game_data(name)))
+        data = find_game_data(name)
+        return load_scored_cover(find_cover(name), game_score(data), max_width, max_height, master=self,
+                                 hypervisor=is_hypervisor(data))
 
     def open_cover_preview(self):
         if self.selected:
@@ -3773,6 +3775,11 @@ class App(tk.Tk):
 
     def show_game_data(self, game):
         data = find_game_data(game['name'])
+        # Reservar primero el espacio del botón y reconstruir el orden de los datos.
+        for slot, _ in self.info_values.values():
+            slot.pack_forget()
+        self.owned_button.pack_forget()
+        self.owned_button.pack(side='right', padx=(8, 0))
         for key, (slot, label) in self.info_values.items():
             value = data.get(key)
             if value:

@@ -120,12 +120,13 @@ class BarraDescarga(tk.Canvas):
 
 class VentanaActualizacion(tk.Toplevel):
     """Presenta oferta y avance; las acciones reales se inyectan con callbacks."""
-    def __init__(self, parent, version_actual, version_nueva, on_start, on_cancel):
+    def __init__(self, parent, version_actual, version_nueva, on_start, on_cancel, on_remind=None):
         super().__init__(parent)
         self.version_actual = str(version_actual)
         self.version_nueva = str(version_nueva)
         self._on_start = on_start
         self._on_cancel = on_cancel
+        self._on_remind = on_remind
         self._modo = 'oferta'
         self._cancelando = False
         self.title("Kalaka's Soft | Actualizador")
@@ -256,6 +257,11 @@ class VentanaActualizacion(tk.Toplevel):
         tk.Label(self.cuerpo,text='✓  Tus juegos, biblioteca y configuraciones se conservan.\n'
                  '✓  El programa se reiniciará al finalizar.',bg=FONDO,fg=GRIS,
                  font=('Segoe UI',10),justify='left').pack(anchor='w')
+        if self._on_remind is not None:
+            tk.Button(self.cuerpo, text='Recordarme en 3 días', command=self._posponer,
+                      bg='#263649', fg=BLANCO, activebackground='#354961',
+                      activeforeground=BLANCO, relief='flat', cursor='hand2',
+                      font=('Segoe UI',10), padx=12, pady=6).pack(anchor='w', pady=(12,0))
         self.aviso.config(text='Descarga verificada con SHA-256.\nConexión HTTPS segura.')
         self.boton_principal.config(text='Actualizar ahora',state='normal')
         self.boton_principal.pack(side='right',before=self.boton_secundario,padx=(0,10))
@@ -361,6 +367,11 @@ class VentanaActualizacion(tk.Toplevel):
         self.boton_secundario.config(text='Cancelando...',state='disabled')
         self.estado.config(text='Cancelando actualización...')
         self._on_cancel()
+
+    def _posponer(self):
+        if self._modo == 'oferta' and self._on_remind is not None:
+            if self._on_remind():
+                self.destroy()
 
     def _cerrar(self):
         if self._modo=='oferta':
